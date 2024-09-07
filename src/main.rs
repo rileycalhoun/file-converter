@@ -2,17 +2,19 @@ mod templates;
 mod endpoints;
 mod schema;
 mod models;
+mod database;
+mod errors;
+
 mod tests;
 
 use std::{env, net::SocketAddr};
 
 use anyhow::Result;
 use dotenvy::dotenv;
-use hyper::StatusCode;
 use tower::ServiceBuilder;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt,util::SubscriberInitExt};
-use axum::{async_trait, extract::{DefaultBodyLimit, FromRef, FromRequestParts}, http::request::Parts, routing::{get, post, Router}};
+use axum::{extract::DefaultBodyLimit, routing::{get, post, Router}};
 use tower_http::{trace::TraceLayer, services::ServeDir};
 use endpoints::{index::root, convert::convert, file::file, download::download};
 use diesel_async::{
@@ -20,35 +22,7 @@ use diesel_async::{
 };
 
 
-type Pool = bb8::Pool<AsyncDieselConnectionManager<AsyncPgConnection>>;
 
-struct DatabaseConnection(
-    bb8::PooledConnection<'static, AsyncDieselConnectionManager<AsyncPgConnection>>,
-);
-
-#[async_trait]
-impl<S> FromRequestParts<S> for DatabaseConnection
-where 
-    S: Send + Sync,
-    Pool: FromRef<S>,
-{
-
-    type Rejection = (StatusCode, String);
-
-    async fn from_request_parts(_parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let pool = Pool::from_ref(state);
-        let conn = pool.get_owned().await.map_err(internal_error)?;
-        Ok(Self(conn))
-    }
-
-}
-
-pub fn internal_error<E>(err: E) -> (StatusCode, String)
-where
-    E: std::error::Error,
-{
-    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {

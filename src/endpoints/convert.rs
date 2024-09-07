@@ -9,13 +9,13 @@ use hyper::StatusCode;
 use serde_json::json;
 use tracing::{debug, info};
 
-use crate::{internal_error, models::{File, NewFile}, DatabaseConnection};
+use crate::{database::DatabaseConnection, errors::{internal_error, ConverterError}, models::{File, NewFile}};
 
 pub async fn convert(
     DatabaseConnection(mut conn): DatabaseConnection,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     mut form: Multipart
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<impl IntoResponse, (StatusCode, String)> {
     let mut input_file_name: Option<String> = None;
     let mut input_file_contents: Option<String> = None;
     let mut conversion_type: Option<String> = None;
@@ -37,12 +37,12 @@ pub async fn convert(
 
     if input_file_contents.is_none() || input_file_name.is_none() {
         info!("[{}] Could not find input file...", addr);
-        return Err(StatusCode::FAILED_DEPENDENCY)
+        return Err(internal_error(ConverterError::MissingDependencies("You need to upload a file!")))
     }
 
     if conversion_type.is_none() {
         info!("[{}] Could not find conversion type...", addr);
-        return Err(StatusCode::FAILED_DEPENDENCY)
+        return Err(internal_error(ConverterError::MissingDependencies("You need to upload a file!")))
     }
 
     info!("[{}] POST request passed depenceny checks...", addr);
@@ -99,6 +99,7 @@ pub async fn convert(
                         .await;
                     match file {
                         Ok(file) => {
+                            info!("[{}] Attempting to upload converted file to Postgres database!", addr);
                             let base64 = STANDARD.encode(file);
 
                             let new_file = NewFile {
@@ -110,8 +111,7 @@ pub async fn convert(
                                 .values(&new_file)
                                 .returning(File::as_returning())
                                 .get_result(&mut conn)
-                                .await
-                                .map_err(internal_error);
+                                .await;
 
                             match file {
                                 Ok(file) => {
@@ -120,35 +120,26 @@ pub async fn convert(
                                 },
                                 Err(_) =>  {
                                     info!("[{}] Recieved error while attempting to upload new file to Postgres!", addr);
-                                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                                    Err(internal_error(ConverterError::DatabaseConnection("Unable to connect to the database!")))
                                 }
                             }
                         },
                         Err(err) => {
                             debug!("[{}] Error while reading bytes: {}", addr, err);
-                            Err(StatusCode::from_u16(520).unwrap())
+                            Err(internal_error(ConverterError::Convert("Something went wrong while trying to convert the requested file!")))
                         }
                     } 
                 }
                 code => {
                     info!("[{}] Recieved the wrong status code from CloudConvert: {}", addr, code);
-                    Err(code)
+                    Err(internal_error(ConverterError::Convert("Something went wrong while trying to convert the requested file!")))
                 }
             }
 
         },
-        Err(err) => {
+        Err(_) => {
             info!("[{}] Recieved error from CloudConvert job!", addr);
-            match err.status() {
-                Some(code) => {
-                    debug!("[{}] Status Code: {}", addr, code);
-                    Err(code)
-                },
-                None => {
-                    debug!("[{}] Recieved no Status Code from CloudConvert!", addr);
-                    Err(StatusCode::from_u16(520).unwrap())
-                }
-            }
+            Err(internal_error(ConverterError::Convert("Something went wrong while trying to convert the requested file!")))
         }
     }
 }
