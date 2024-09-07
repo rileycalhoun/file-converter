@@ -81,10 +81,10 @@ async fn main() -> Result<()> {
 
     let addr = env::var("ADDRESS")
         .expect("ADDRESS must be set! Check your .env file!");
-    let listener = tokio::net::TcpListener::bind(addr)
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await?;
 
-    info!("Service now listening at http://127.0.0.1:8000");
+    info!("Service now listening at on {}", &addr);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>()
