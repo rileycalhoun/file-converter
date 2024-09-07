@@ -2,6 +2,7 @@ mod templates;
 mod endpoints;
 mod schema;
 mod models;
+mod tests;
 
 use std::{env, net::SocketAddr};
 
@@ -78,7 +79,9 @@ async fn main() -> Result<()> {
         .layer(DefaultBodyLimit::max(20480 * 1024))
         .with_state(pool);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8000")
+    let addr = env::var("ADDRESS")
+        .expect("ADDRESS must be set! Check your .env file!");
+    let listener = tokio::net::TcpListener::bind(addr)
         .await?;
 
     info!("Service now listening at http://127.0.0.1:8000");
