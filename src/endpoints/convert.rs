@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, time::Duration};
+use std::{env, net::SocketAddr};
 
 use anyhow::Result;
 use axum::{extract::{ConnectInfo, Multipart}, response::{IntoResponse, Redirect}};
@@ -7,7 +7,6 @@ use diesel::SelectableHelper;
 use diesel_async::RunQueryDsl;
 use hyper::StatusCode;
 use serde_json::json;
-use tokio::time::sleep;
 use tracing::{debug, info};
 
 use crate::{internal_error, models::{File, NewFile}, DatabaseConnection};
@@ -116,7 +115,6 @@ pub async fn convert(
 
                             match file {
                                 Ok(file) => {
-                                    let _ = sleep(Duration::from_millis(10));
                                     info!("[{}] Redirecting to /files/{}", addr, file.id);
                                     Ok(Redirect::to(&format!("/files/{}", file.id)))
                                 },
