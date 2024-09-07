@@ -9,10 +9,11 @@ use std::{env, net::SocketAddr};
 use anyhow::Result;
 use dotenvy::dotenv;
 use hyper::StatusCode;
+use tower::ServiceBuilder;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt,util::SubscriberInitExt};
 use axum::{async_trait, extract::{DefaultBodyLimit, FromRef, FromRequestParts}, http::request::Parts, routing::{get, post, Router}};
-use tower_http::services::ServeDir;
+use tower_http::{trace::TraceLayer, services::ServeDir};
 use endpoints::{index::root, convert::convert, file::file, download::download};
 use diesel_async::{
     pooled_connection::AsyncDieselConnectionManager, AsyncPgConnection
@@ -76,7 +77,11 @@ async fn main() -> Result<()> {
         .route("/files/:id", get(file))
         .route("/download/:id", get(download))
         .nest_service("/assets", ServeDir::new("static"))
-        .layer(DefaultBodyLimit::max(20480 * 1024))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(DefaultBodyLimit::max(20480 * 1024))
+        )
         .with_state(pool);
 
     let addr = env::var("ADDRESS")
