@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Download {{file_name}}</title>
+        <link rel="stylesheet" href="/assets/css/file.css">
+        <link rel="stylesheet" href="/assets/css/fonts.css">
+        <link rel="icon" type="image/png" href="/assets/favicon.png">
+        <script>
+            document.body.style.cursor = "default";
+            window.onload = function() {
+                document.getElementById("download").onclick = function () {
+                    location.href = document.getElementById("download").getAttribute("uri");
+                };
+
+                document.getElementById("home").onclick = function() {
+                    location.href = "/";
+                };
+            }
+        </script>
+    </head>
+    <body>
+        <h1 id="title" class="bebas-neue-bold">Your document is ready for download!</h1>
+        <div>
+            <div class="buttons">
+                <button 
+                    id="download"
+                    class="bebas-neue-bold"
+                    uri={{download_uri}}
+                >Download</button>
+                <button id="home" class="bebas-neue-bold">Home</button>
+            </div>
+        </div>
+    </body>
+</html>

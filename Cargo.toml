@@ -1,0 +1,42 @@
+[package]
+name = "file-converter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22.1"
+dotenvy = "0.15.7"
+askama = "0.12.1"
+hyper = "1.4.1"
+serde_json = "1.0.127"
+tracing = "0.1.40"
+anyhow = "1.0.86"
+bb8 = "0.8.5"
+
+[dependencies.tokio]
+version = "1.39.3"
+features = ["rt-multi-thread", "macros", "full"]
+
+[dependencies.axum]
+version = "0.7.5"
+features = ["multipart"]
+
+[dependencies.diesel]
+version = "2.2.4"
+features = ["postgres"]
+
+[dependencies.diesel-async]
+version = "0.5.0"
+features = ["bb8", "postgres"]
+
+[dependencies.tower-http]
+version = "0.5.2"
+features = ["fs"]
+
+[dependencies.tracing-subscriber]
+version = "0.3.18"
+features = ["env-filter"]
+
+[dependencies.reqwest]
+version = "0.12.7"
+features = ["json"]
