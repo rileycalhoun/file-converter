@@ -1,15 +1,14 @@
 use std::net::SocketAddr;
-
 use askama::Template;
-use base64::{engine::general_purpose::STANDARD, Engine};
-use diesel::{QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use tracing::debug;
 use axum::{
     body::Body, extract::{ConnectInfo, Path}, http::{header, HeaderName}, response::{AppendHeaders, Html, IntoResponse}
 };
 
-use crate::{internal_error, models::File, templates::NotFound, DatabaseConnection};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use diesel::{QueryDsl, SelectableHelper};
+use crate::{models::File, templates::NotFound, database::DatabaseConnection};
 
 pub enum DownloadResponse {
     Ok((AppendHeaders<Vec<(HeaderName, String)>>, Body)),
@@ -39,9 +38,7 @@ pub async fn download(DatabaseConnection(mut conn): DatabaseConnection, ConnectI
         .select(File::as_select())
         .find(identifier)
         .first(&mut conn)
-        .await
-        .map_err(internal_error);
-
+        .await;
 
     debug!("[{}] Attempting to find file {} in database!", addr, identifier);
     match file {

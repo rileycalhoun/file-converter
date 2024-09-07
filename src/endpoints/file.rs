@@ -3,7 +3,7 @@ use axum::{extract::Path, response::Html};
 use diesel::{QueryDsl,  SelectableHelper};
 use diesel_async::RunQueryDsl;
 
-use crate::{internal_error, models::File, schema::files::dsl::*, templates::{FileInfo, NotFound}, DatabaseConnection};
+use crate::{models::File, schema::files::dsl::*, templates::{FileInfo, NotFound}, database::DatabaseConnection};
 
 pub async fn file(DatabaseConnection(mut conn): DatabaseConnection, Path(identifier): Path<i32>) -> Html<String> {
     // Find ID in Postgres database
@@ -11,8 +11,7 @@ pub async fn file(DatabaseConnection(mut conn): DatabaseConnection, Path(identif
         .select(File::as_select())
         .find(identifier)
         .first(&mut conn)
-        .await
-        .map_err(internal_error);
+        .await;
 
     match file {
         Ok(file) => {
