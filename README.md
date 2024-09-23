@@ -1,6 +1,6 @@
 # A File Converter, built with Rust
 ## UNSTABLE BRANCH
-See [master][https://github.com/rileycalhoun/file-converter/tree/master] branch
+See [master](https://github.com/rileycalhoun/file-converter/tree/master) branch
 
 ## Instructions
 You need a postgres database and a CloudConvert API key to run this locally.
