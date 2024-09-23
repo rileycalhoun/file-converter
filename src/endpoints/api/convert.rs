@@ -1,21 +1,21 @@
 use std::{env, net::SocketAddr};
 
-use anyhow::Result;
 use axum::extract::{ConnectInfo, Multipart, State};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use diesel::SelectableHelper;
-use diesel_async::RunQueryDsl;
 use hyper::StatusCode;
-use serde::Deserialize;
 use serde_json::json;
 use tower_sessions::Session;
 use tracing::{debug, info};
 
-use crate::{database::DatabaseConnection, errors::{internal_error, ConverterError}, models::{File, NewFile}, response::{AppResponse, JobResponse}, JobId, SharedState};
+use crate::{
+    errors::{internal_error,ConverterError},
+    converter::jobs::JobId,
+    response::JobResponse
+};
 
 pub async fn convert(
     session: Session,
-    State(state): State<SharedState>,
+    State(state): State<crate::SharedState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     mut form: Multipart
 ) -> (StatusCode, String) {
@@ -26,6 +26,7 @@ pub async fn convert(
     if session.id().is_none() {
         let _ = session.save().await;
     }
+
     let session_id = session.id().unwrap();
 
     info!("[{}] Recieved POST request on /convert", addr);
@@ -60,12 +61,6 @@ pub async fn convert(
 
     let conversion_type = conversion_type.unwrap();
     let input_file_name = input_file_name.unwrap();
-
-    let output_file_name = format!(
-        "{}.{}",
-        &input_file_name[0..input_file_name.rfind('.').unwrap_or(input_file_name.len())],
-        conversion_type.to_lowercase() 
-    );
 
     info!("[{}] Starting POST request to CloudConvert...", addr);
     let client = reqwest::Client::new();
@@ -112,8 +107,8 @@ pub async fn convert(
                             let job = response.job;
                             let job_id = JobId::from(job.id);
 
-                            let state = state.lock().await;
-                            let mut pending = state.pending_jobs;
+                            let mut state = state.write().await;
+                            let pending = &mut state.pending_jobs;
                             pending.insert(job_id, session_id);
                              
                             (StatusCode::OK, "You will be redirected when your file(s) have completed converting.".to_string())

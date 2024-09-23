@@ -1,5 +1,5 @@
 [package]
-name = "file-converter"
+name = "file_converter"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,6 +18,8 @@ rand = "0.8.5"
 lock_api = "0.4.12"
 tower-session = "0.0.0"
 tower-sessions = "0.13.0"
+web-push-native = "0.4.0"
+hyper-tls = "0.6.0"
 
 [dependencies.serde]
 version = "1.0.210"

@@ -1,3 +1,6 @@
+pub(crate) mod schema;
+pub(crate) mod models;
+
 use crate::SharedState;
 
 use super::errors::{internal_error, ConverterError};
@@ -17,7 +20,7 @@ impl FromRequestParts<SharedState> for DatabaseConnection {
     type Rejection = (StatusCode, String);
 
     async fn from_request_parts(_parts: &mut Parts, state: &SharedState) -> Result<Self, Self::Rejection> {
-        let state = state.lock().await;
+        let state = state.read().await;
 
         let pool = &state.pool;
         let conn = pool.get_owned().await;

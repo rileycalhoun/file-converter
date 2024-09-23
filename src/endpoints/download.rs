@@ -1,14 +1,21 @@
 use std::net::SocketAddr;
-use askama::Template;
+use diesel::{QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
+use askama::Template;
 use tracing::debug;
 use axum::{
     body::Body, extract::{ConnectInfo, Path}, http::{header, HeaderName}, response::{AppendHeaders, Html, IntoResponse}
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use diesel::{QueryDsl, SelectableHelper};
-use crate::{database::DatabaseConnection, models::File, templates::NotFound, SharedState};
+use crate::{
+    database::{
+        DatabaseConnection,
+        schema::files::dsl::files,
+        models::File
+    },
+    templates::NotFound
+};
 
 pub enum DownloadResponse {
     Ok((AppendHeaders<Vec<(HeaderName, String)>>, Body)),
@@ -32,10 +39,11 @@ impl IntoResponse for DownloadResponse {
 
 }
 
-pub async fn download
-    (DatabaseConnection(mut conn): DatabaseConnection, ConnectInfo(addr): ConnectInfo<SocketAddr>, Path(identifier): Path<i32>) -> DownloadResponse {
-    use crate::schema::files::dsl::*;
-
+pub async fn download(
+    DatabaseConnection(mut conn): DatabaseConnection,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(identifier): Path<i32>
+) -> DownloadResponse {
     let file: Result<File, _> = files
         .select(File::as_select())
         .find(identifier)
@@ -49,7 +57,10 @@ pub async fn download
     }
 }
 
-fn start_download(base64: String, file_name: String) -> (AppendHeaders<Vec<(HeaderName, String)>>, Body) {
+fn start_download(
+    base64: String,
+    file_name: String
+) -> (AppendHeaders<Vec<(HeaderName, String)>>, Body) {
     let file_extension = &file_name[(file_name.rfind('.').unwrap_or(0) + 1)..file_name.len()];
     let mime_type = match file_extension {
         "pdf" => {

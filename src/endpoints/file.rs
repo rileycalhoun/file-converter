@@ -1,11 +1,24 @@
 use askama::Template;
-use axum::{extract::Path, response::Html};
 use diesel::{QueryDsl,  SelectableHelper};
 use diesel_async::RunQueryDsl;
 
-use crate::{models::File, schema::files::dsl::*, templates::{FileInfo, NotFound}, database::DatabaseConnection};
+use axum::{extract::Path, response::Html};
+use crate::{
+    database::{
+        models::File,
+        schema::files::dsl::files,
+        DatabaseConnection
+    },
+    templates::{
+        FileInfo,
+        NotFound
+    }
+};
 
-pub async fn file(DatabaseConnection(mut conn): DatabaseConnection, Path(identifier): Path<i32>) -> Html<String> {
+pub async fn file(
+    DatabaseConnection(mut conn): DatabaseConnection,
+    Path(identifier): Path<i32>
+) -> Html<String> {
     // Find ID in Postgres database
     let file: Result<File, _> = files
         .select(File::as_select())
