@@ -8,7 +8,7 @@ use axum::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use diesel::{QueryDsl, SelectableHelper};
-use crate::{models::File, templates::NotFound, database::DatabaseConnection};
+use crate::{database::DatabaseConnection, models::File, templates::NotFound, SharedState};
 
 pub enum DownloadResponse {
     Ok((AppendHeaders<Vec<(HeaderName, String)>>, Body)),
@@ -32,8 +32,10 @@ impl IntoResponse for DownloadResponse {
 
 }
 
-pub async fn download(DatabaseConnection(mut conn): DatabaseConnection, ConnectInfo(addr): ConnectInfo<SocketAddr>, Path(identifier): Path<i32>) -> DownloadResponse {
+pub async fn download
+    (DatabaseConnection(mut conn): DatabaseConnection, ConnectInfo(addr): ConnectInfo<SocketAddr>, Path(identifier): Path<i32>) -> DownloadResponse {
     use crate::schema::files::dsl::*;
+
     let file: Result<File, _> = files
         .select(File::as_select())
         .find(identifier)
