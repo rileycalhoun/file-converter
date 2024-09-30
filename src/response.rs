@@ -1,8 +1,18 @@
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 
-#[derive(Deserialize)]
+#[derive(Serialize)]
 pub struct AppResponse {
     pub ok: bool
+}
+
+#[derive(Deserialize)]
+pub struct CreateResponse {
+    pub data: CreateResponseData
+}
+
+#[derive(Deserialize)]
+pub struct CreateResponseData {
+    pub id: String
 }
 
 #[derive(Deserialize)]

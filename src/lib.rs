@@ -5,28 +5,40 @@ pub mod converter;
 pub mod database;
 pub mod webhook;
 pub mod errors;
-pub mod notifications;
 
 use converter::jobs::JobId;
-use tokio::sync::RwLock;
+use database::Pool;
+use tokio::sync::{mpsc, RwLock};
 use tower_sessions::session::Id as SessionId;
 
 use std::{collections::HashMap, sync::Arc};
 use diesel_async::{pooled_connection::AsyncDieselConnectionManager, AsyncPgConnection};
 
+pub enum JobStatus {
+    PENDING, FAILED, COMPLETED
+}
+
+pub struct SocketMessage {
+    job_status: JobStatus,
+    file_name: String,
+    job_id: JobId
+}
+
 pub struct State {
-    pool: bb8::Pool<AsyncDieselConnectionManager<AsyncPgConnection>>,
-    pending_jobs: HashMap<JobId, SessionId>
+    pool: Pool,
+    pending_jobs: RwLock<HashMap<JobId, SessionId>>,
+    connected_clients: RwLock<HashMap<SessionId, mpsc::Sender<SocketMessage>>>
 }
 
 impl State {
     pub async fn default(config: AsyncDieselConnectionManager<AsyncPgConnection>) -> State {
         State {
             pool: bb8::Pool::builder().build(config).await.unwrap(),
-            pending_jobs: HashMap::new()
+            pending_jobs: RwLock::new(HashMap::new()),
+            connected_clients: RwLock::new(HashMap::new())
         }
     }
 
 }
 
-pub type SharedState = Arc<RwLock<State>>;
+pub type SharedState = Arc<State>;
