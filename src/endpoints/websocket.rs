@@ -1,35 +1,26 @@
 use std::net::SocketAddr;
+use async_recursion::async_recursion;
 use tokio::sync::mpsc;
 
 use axum::{extract::{ws::{Message, WebSocket}, ConnectInfo, State, WebSocketUpgrade}, response::IntoResponse};
-use tower_sessions::{session::Id, Session};
-use tracing::info;
+use tracing::{info, warn, error};
 
 use crate::{converter::jobs::JobId, JobStatus, SharedState, SocketMessage};
 
 pub(super) async fn socket(
     State(state): State<SharedState>,
     ws: WebSocketUpgrade,
-    session: Session,
     ConnectInfo(addr): ConnectInfo<SocketAddr>    
 ) -> impl IntoResponse {
     info!("[{}] Recieved socket connection!", addr);
-
-    if session.id().is_none() {
-        let _ = session.save().await;
-    }
-
-    let id = session.id().unwrap_or_else(|| panic!("[{}] Expected session_id to be some. got none!", addr));
-
     ws.on_upgrade(move |socket| {
-        handle_socket(state, socket, id, addr)
+        handle_socket(state, socket, addr)
     })
 }
 
 async fn handle_socket(
     state: SharedState,
     mut socket: WebSocket,
-    id: Id,
     addr: SocketAddr
 ) {
     if socket.send(Message::Ping(vec![1, 2, 3])).await.is_err() {
@@ -37,30 +28,69 @@ async fn handle_socket(
         return;
     }
 
+    let session_id = handle_socket_message(&mut socket).await;
+    if session_id.is_none() {
+        warn!("[{}] No session_id!", addr);
+        return;
+    }
+
+    let session_id = session_id.unwrap();
+    info!("[{}] Client connected with id: {}!", addr, session_id);
+
     let (tx, mut rx) = mpsc::channel::<SocketMessage>(10);
     let mut clients = state.connected_clients.write().await;
-    if clients.contains_key(&id) {
-        info!("[{}] Client already connected with Session id {}!", addr, id);
+    if clients.contains_key(&session_id) {
+        info!("[{}] Client already connected with Session id {}!", addr, session_id);
         let _ = socket.send(Message::Text("duplicate-connection".to_string())).await;
         return;
     }
 
-    clients.insert(id, tx);
+    clients.insert(session_id, tx);
     drop(clients);
 
+    let _ = socket.send(Message::Text("Hello, world".to_string())).await;
     while let Some(msg) = rx.recv().await {
         let status = msg.job_status;
-        match status {
+        let message = match status {
             JobStatus::PENDING => continue,
             JobStatus::FAILED => {
-                let message = format!("job-failed;{}", msg.file_name);
-                let _ = socket.send(Message::Text(message));
+                format!("job-failed;{}", msg.file_name)
             },
             JobStatus::COMPLETED => {
-                let JobId(job_id) = msg.job_id;
-                let message = format!("job-completed;{}", job_id);
-                let _ = socket.send(Message::Text(message));
+                format!("job-completed;{}", msg.job_id.0)
             }
         };
+
+        if socket.send(Message::Text(message)).await.is_err() {
+            error!("[{}] There was an error while trying to send converter response!", addr); 
+        } else {
+            info!("[{}] Sent response with converted response!", addr);
+        }
+    }
+}
+
+#[async_recursion]
+async fn handle_socket_message(socket: &mut WebSocket) -> Option<String> {
+    if let Some(Ok(msg)) = socket.recv().await {
+        match msg {
+            Message::Text(msg) => {
+                if msg.starts_with("session-id") {
+                    let id = msg.split(";").last();
+                    if id.is_none() {
+                        None
+                    } else {
+                        Some(id.unwrap().to_string())
+                    }
+                } else {
+                    None
+                }
+            },
+            Message::Pong(_) => handle_socket_message(socket).await,
+            _ => {
+                None
+            }
+        }
+    } else {
+        None
     }
 }

@@ -9,7 +9,6 @@ pub mod errors;
 use converter::jobs::JobId;
 use database::Pool;
 use tokio::sync::{mpsc, RwLock};
-use tower_sessions::session::Id as SessionId;
 
 use std::{collections::HashMap, sync::Arc};
 use diesel_async::{pooled_connection::AsyncDieselConnectionManager, AsyncPgConnection};
@@ -26,8 +25,8 @@ pub struct SocketMessage {
 
 pub struct State {
     pool: Pool,
-    pending_jobs: RwLock<HashMap<JobId, SessionId>>,
-    connected_clients: RwLock<HashMap<SessionId, mpsc::Sender<SocketMessage>>>
+    pending_jobs: RwLock<HashMap<JobId, String>>,
+    connected_clients: RwLock<HashMap<String, mpsc::Sender<SocketMessage>>>
 }
 
 impl State {

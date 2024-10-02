@@ -1,5 +1,5 @@
 
-window.onload = () => {
+window.onload = async () => {
 	let form = document.getElementById('convert');
 	form.addEventListener('submit', async function(event) {
 		event.preventDefault();
@@ -7,7 +7,8 @@ window.onload = () => {
 			method: 'POST',
 			body: new FormData(form)
 		});	
-		
-		alert(`${response.status}, ${response.statusText}`);
+
+		let message = await response.text();
+		alert(`${response.status}, ${message}`);
 	});
 }

@@ -1,46 +1,32 @@
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize)]
-pub struct AppResponse {
-    pub ok: bool
-}
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct CreateResponse {
-    pub data: CreateResponseData
-}
-
-#[derive(Deserialize)]
-pub struct CreateResponseData {
     pub id: String
-}
-
-#[derive(Deserialize)]
-pub struct JobResponse {
-    pub event: String,
-    pub job: Job
 }
 
 #[derive(Deserialize)]
 pub struct Job {
     pub id: String,
-    pub tag: String,
-    pub tasks: Box<[JobTask]>
+    pub tasks: Vec<JobTask>
 }
 
 #[derive(Deserialize)]
 pub struct JobTask {
     pub id: String,
-    pub name: String,
     pub operation: String,
-    pub percent: i8,
-    pub result: Box<[TaskFile]>
+    pub result: TaskResult
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
+pub struct TaskResult {
+    pub files: Vec<TaskFile>
+}
+
+#[derive(Deserialize)]
 pub struct TaskFile {
     #[serde(rename = "filename")]
     pub file_name: String,
-    pub url: String
+
+    pub url: Option<String>
 }

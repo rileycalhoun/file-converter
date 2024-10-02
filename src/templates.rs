@@ -4,7 +4,8 @@ use askama::Template;
 #[template(path = "index.html")]
 #[allow(dead_code)]
 pub(crate) struct Index {
-    pub(crate) authorized_extensions: String
+    pub(crate) authorized_extensions: String,
+    pub(crate) session_id: String
 }
 
 
