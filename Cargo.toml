@@ -20,6 +20,8 @@ tower-session = "0.0.0"
 tower-sessions = "0.13.0"
 web-push-native = "0.4.0"
 hyper-tls = "0.6.0"
+futures-util = "0.3.30"
+async-recursion = "1.1.1"
 
 [dependencies.serde]
 version = "1.0.210"

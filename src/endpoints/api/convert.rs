@@ -3,12 +3,12 @@ use std::{env, net::SocketAddr};
 use axum::extract::{ConnectInfo, Multipart, State};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use hyper::StatusCode;
-use serde_json::json;
+use serde_json::{json, Value};
 use tower_sessions::Session;
 use tracing::{debug, info};
 
 use crate::{
-    converter::jobs::JobId, errors::{internal_error,ConverterError}, response::{CreateResponse, JobResponse}
+    converter::jobs::JobId, errors::{internal_error,ConverterError}, response::CreateResponse
 };
 
 pub async fn convert(
@@ -114,11 +114,22 @@ pub async fn convert(
                             let response_string = String::from_utf8(bytes.to_vec()).unwrap();
                             debug!("{}", response_string);
 
-                            let response: CreateResponse = serde_json::from_str(&response_string).unwrap();
-                            let job_id = JobId::from(response.data.id);
+                            let body: Value = serde_json::from_str(&response_string).unwrap();
+                            let body = body["data"].clone();
+
+                            let response = serde_json::from_value::<CreateResponse>(body);
+                            if response.is_err() {
+                                debug!("[{}] No 'data' field in response!", addr);
+                                return internal_error(ConverterError::Convert("Something went wrong while trying to convert the requested file!"))
+                            }
+
+                            let response = response.unwrap();
+                            let job_id = JobId::from(response.id);
+                            
+                            info!("{}", session_id);
 
                             let mut pending = state.pending_jobs.write().await;
-                            pending.insert(job_id, session_id);
+                            pending.insert(job_id, session_id.to_string());
                             drop(pending);
                              
                             (StatusCode::OK, "You will be redirected when your file(s) have completed converting.".to_string())

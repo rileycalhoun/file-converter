@@ -4,7 +4,7 @@ use tower::ServiceBuilder;
 use tracing::info;
 
 use std::{env, net::SocketAddr, sync::Arc};
-use tower_sessions::{cookie::time::Duration, Expiry, MemoryStore, SessionManagerLayer};
+use tower_sessions::{cookie::time::{Duration, OffsetDateTime}, Expiry, MemoryStore, SessionManagerLayer};
 use tracing_subscriber::{layer::SubscriberExt,util::SubscriberInitExt};
 use axum::extract::DefaultBodyLimit;
 use diesel_async::{
@@ -38,16 +38,13 @@ async fn main() -> Result<()> {
     let session_store = MemoryStore::default();
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false)
-        .with_expiry(Expiry::OnInactivity(Duration::days(1)));
+        .with_expiry(Expiry::AtDateTime(OffsetDateTime::now_utc().checked_add(Duration::days(1)).unwrap()));
 
     info!("Initializing service...");
     let app = get_router()
-        .layer(
-            ServiceBuilder::new()
-                .layer(DefaultBodyLimit::max(20480 * 1024))
-                .layer(session_layer)
-        )
-       .with_state(shared_state);
+        .layer(DefaultBodyLimit::max(20480 * 1024))
+        .layer(session_layer)
+        .with_state(shared_state);
 
     let addr = env::var("ADDRESS")
         .expect("ADDRESS must be set! Check your .env file!");
