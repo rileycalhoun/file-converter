@@ -1,5 +1,5 @@
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Clone)]
 pub struct JobId(pub String);
 impl From<String> for JobId {
     

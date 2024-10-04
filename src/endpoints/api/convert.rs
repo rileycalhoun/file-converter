@@ -8,9 +8,7 @@ use tower_sessions::Session;
 use tracing::{debug, info};
 
 use crate::{
-    errors::{internal_error,ConverterError},
-    converter::jobs::JobId,
-    response::JobResponse
+    converter::jobs::JobId, errors::{internal_error,ConverterError}, response::{CreateResponse, JobResponse}
 };
 
 pub async fn convert(
@@ -64,7 +62,18 @@ pub async fn convert(
 
     info!("[{}] Starting POST request to CloudConvert...", addr);
     let client = reqwest::Client::new();
-    let job_response = client.post("https://api.cloudconvert.com/v2/jobs")
+
+    let dev_mode = env::var("DEV_MODE")
+        .expect("DEV_MODE must be set! Check your .env file!")
+        .parse::<bool>()
+        .expect("DEV_MODE must be true/false! Check your .env file!");
+
+    let base_url = match dev_mode {
+        false => env::var("CLOUDCONVERT_API").expect("CLOUDCONVERT_API must be set! Check your .env file!"),
+        true  => env::var("CLOUDCONVERT_SANDBOX_API").expect("CLOUDCONVERT_SANDBOX_API must be set! Check your .env file!") 
+    };
+
+    let job_response = client.post(format!("{}/v2/jobs", base_url))
         .bearer_auth(&api_key)
         .json(&json!({
             "tasks": {
@@ -96,20 +105,21 @@ pub async fn convert(
     match job_response.error_for_status() {
         Ok(job_response) => {
             match job_response.status() {
-                StatusCode::OK => {
+                StatusCode::CREATED => {
                     let bytes = job_response
                         .bytes()
                         .await;
                     match bytes {
                         Ok(bytes) => {
                             let response_string = String::from_utf8(bytes.to_vec()).unwrap();
-                            let response: JobResponse = serde_json::from_str(&response_string).unwrap();
-                            let job = response.job;
-                            let job_id = JobId::from(job.id);
+                            debug!("{}", response_string);
 
-                            let mut state = state.write().await;
-                            let pending = &mut state.pending_jobs;
+                            let response: CreateResponse = serde_json::from_str(&response_string).unwrap();
+                            let job_id = JobId::from(response.data.id);
+
+                            let mut pending = state.pending_jobs.write().await;
                             pending.insert(job_id, session_id);
+                            drop(pending);
                              
                             (StatusCode::OK, "You will be redirected when your file(s) have completed converting.".to_string())
                         },

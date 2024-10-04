@@ -1,6 +1,5 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 use tracing::info;
 
@@ -33,9 +32,7 @@ async fn main() -> Result<()> {
 
     let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(db_url);
     let shared_state: SharedState = Arc::new(
-        RwLock::new(
             State::default(config).await
-        )
     );
 
     let session_store = MemoryStore::default();
