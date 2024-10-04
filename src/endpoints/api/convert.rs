@@ -20,11 +20,8 @@ pub async fn convert(
     let mut input_file_name: Option<String> = None;
     let mut input_file_contents: Option<String> = None;
     let mut conversion_type: Option<String> = None;
-
-    if session.id().is_none() {
-        let _ = session.save().await;
-    }
-
+    
+    // If session_id is null, there is something wrong on the clients' end.
     let session_id = session.id().unwrap();
 
     info!("[{}] Recieved POST request on /convert", addr);

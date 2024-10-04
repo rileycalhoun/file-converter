@@ -5,7 +5,8 @@ use askama::Template;
 #[allow(dead_code)]
 pub(crate) struct Index {
     pub(crate) authorized_extensions: String,
-    pub(crate) session_id: String
+    pub(crate) session_id: String,
+    pub(crate) website_url: String
 }
 
 

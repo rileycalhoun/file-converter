@@ -1,17 +1,21 @@
 use axum::{extract::State, response::{IntoResponse, Response}, Json};
+use diesel::SelectableHelper;
+use diesel_async::RunQueryDsl;
 use serde_json::{json, Value};
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::{
-    database::DatabaseConnection, response::{
+    database::{models::{File, NewFile}, DatabaseConnection}, response::{
         Job,
         JobTask
-    }, JobId, JobStatus, SharedState
+    }, JobId, JobStatus, SharedState, SocketMessage
 };
 
 pub async fn finished(
     State(state): State<SharedState>,
-    DatabaseConnection(_conn): DatabaseConnection,
+    DatabaseConnection(mut conn): DatabaseConnection,
     Json(body): Json<Value>
 ) -> Response {
     {
@@ -37,34 +41,6 @@ pub async fn finished(
     info!("[Job {}] Recieved completion response!", id);
     let job_id = JobId(id);
 
-    let task = find_export_task(tasks);
-    if task.is_none() {
-        warn!("[Job {}] Webhook does not contain export-my-file task!", job_id.0);
-        return json(false)
-    }
-
-    let task = task.unwrap();
-    let file = task.result.files.get(0).unwrap();
-
-    let url = file.url.clone();
-    let url = url.unwrap();
-
-    let client = reqwest::Client::new();
-    let request = client.get(url).build().unwrap();
-    let response = client.execute(request).await;
-
-    if response.is_err() {
-        error!("[{}] Could not get converted file from given URL.", job_id.0);
-        return json(false);
-    }
-
-    let response = response.unwrap();
-    let body = response.bytes().await.unwrap();
-    let body = String::from_utf8(body.to_vec()).unwrap();
-    info!("{}", body);
-
-    // Get file information, upload to database
-
     let pending_jobs = &state.pending_jobs.read().await;
     if !pending_jobs.contains_key(&job_id) {
         warn!("[{}] Job has no assigned session!", job_id.0);
@@ -79,6 +55,14 @@ pub async fn finished(
 
     let session_id = session_id.unwrap().to_string();
 
+    let task = find_export_task(tasks);
+    if task.is_none() {
+        warn!("[Job {}] Webhook does not contain export-my-file task!", job_id.0);
+        return json(false)
+    }
+
+    let task = task.unwrap();
+    let file = task.result.files.get(0);
     let mut clients = state.connected_clients.write().await; 
     let client = clients.get(&session_id);
     if client.is_none() {
@@ -87,20 +71,99 @@ pub async fn finished(
     }
 
     let client = client.unwrap();
-    if let Err(err) = client.send(crate::SocketMessage {
-        job_status: JobStatus::COMPLETED,
-        file_name: format!("Jared"),
-        job_id: job_id.clone()
-    }).await {
-        error!("[Job {}] Recieved error while attempting to send message to client.", job_id.0);
-        debug!("[Job {}] Error: {}", job_id.0, err);
-        return json(false)
+
+    let success = match file {
+        Some(file) => {
+            let url = file.url.clone();
+            match url {
+                Some(url) => {
+                    let reqwest_client = reqwest::Client::new();
+                    let response = reqwest_client.get(url)
+                        .send()
+                        .await
+                        .unwrap();
+
+                    match response.error_for_status() {
+                        Ok(response) => {
+                            let bytes = response.bytes().await;
+                            match bytes {
+                                Ok(bytes) => {
+                                    let base64 = STANDARD.encode(bytes);
+                                    let new_file = NewFile {
+                                        file_name: &file.file_name,
+                                        content: &base64
+                                    };
+
+                                    let file = diesel::insert_into(crate::database::schema::files::table)
+                                        .values(&new_file)
+                                        .returning(File::as_returning())
+                                        .get_result(&mut conn)
+                                        .await;
+
+                                    match file {
+                                        Ok(file) => {
+                                            send_client_message(client, SocketMessage {
+                                                job_id: job_id.clone(),
+                                                job_status: JobStatus::COMPLETED,
+                                                file_id: Some(file.id)
+                                            }).await;
+                                            
+                                            true
+                                        },
+                                        Err(_) => {
+                                            error!("[{}] There was an error while attempting to upload the file to the database!", job_id.0);
+                                            false
+                                        }
+                                    }
+
+                                },
+                                Err(err) => {
+                                    error!("[{}] Recieved error code when attempting to request file: {}", job_id.0, err);
+                                    false
+                                }
+                            }
+                        },
+                        Err(_) => {
+                            error!("[{}] Could not get converted file from given URL.", job_id.0);
+                            false
+                        }
+                    }
+                },
+                None => {
+                    error!("[{}] Could not find any specified URL from the task!", job_id.0);
+                    false
+                }
+            }
+        },
+        None => {
+            error!("[{}] Could not find any file in task!", job_id.0);
+            false
+        }
+    };
+
+    if success == false {
+        send_client_message(client, SocketMessage {
+            job_id,
+            job_status: JobStatus::FAILED,
+            file_id: None
+        }).await;
     }
 
     clients.remove(&session_id);
     drop(clients);
 
-    return json(true)
+    json(success)
+}
+
+async fn send_client_message(client: &Sender<SocketMessage>, msg: SocketMessage) -> bool {
+    let job_id = msg.job_id.clone();
+    if let Err(err) = client.send(msg).await {
+        error!("[Job {}] Recieved error while attempting to send message to client.", job_id.0);
+        debug!("[Job {}] Error: {}", job_id.0, err);
+        return false
+    }
+
+    return true
 }
 
 fn json(ok: bool) -> Response {
