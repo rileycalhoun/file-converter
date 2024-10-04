@@ -1,28 +1,19 @@
-mod templates;
-mod endpoints;
-mod schema;
-mod models;
-mod database;
-mod errors;
-
-mod tests;
-
-use std::{env, net::SocketAddr};
-
 use anyhow::Result;
 use dotenvy::dotenv;
+use tokio::sync::RwLock;
 use tower::ServiceBuilder;
 use tracing::info;
+
+use std::{env, net::SocketAddr, sync::Arc};
+use tower_sessions::{cookie::time::Duration, Expiry, MemoryStore, SessionManagerLayer};
 use tracing_subscriber::{layer::SubscriberExt,util::SubscriberInitExt};
-use axum::{extract::DefaultBodyLimit, routing::{get, post, Router}};
-use tower_http::{trace::TraceLayer, services::ServeDir};
-use endpoints::{index::root, convert::convert, file::file, download::download};
+use axum::extract::DefaultBodyLimit;
 use diesel_async::{
     pooled_connection::AsyncDieselConnectionManager, AsyncPgConnection
 };
-
-
-
+use file_converter::{
+    endpoints::get_router, SharedState, State
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,22 +32,25 @@ async fn main() -> Result<()> {
         .expect("DATABASE_URL must be set! Check your .env file!");
 
     let config = AsyncDieselConnectionManager::<AsyncPgConnection>::new(db_url);
-    let pool = bb8::Pool::builder().build(config).await.unwrap();
+    let shared_state: SharedState = Arc::new(
+        RwLock::new(
+            State::default(config).await
+        )
+    );
+
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_secure(false)
+        .with_expiry(Expiry::OnInactivity(Duration::days(1)));
 
     info!("Initializing service...");
-
-    let app = Router::new()
-        .route("/", get(root))
-        .route("/convert", post(convert))
-        .route("/files/:id", get(file))
-        .route("/download/:id", get(download))
-        .nest_service("/assets", ServeDir::new("static"))
+    let app = get_router()
         .layer(
             ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
                 .layer(DefaultBodyLimit::max(20480 * 1024))
+                .layer(session_layer)
         )
-        .with_state(pool);
+       .with_state(shared_state);
 
     let addr = env::var("ADDRESS")
         .expect("ADDRESS must be set! Check your .env file!");

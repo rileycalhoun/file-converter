@@ -1,27 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
     <head>
-        <script src="https://unpkg.com/htmx.org@2.0.2" integrity="sha384-Y7hw+L/jvKeWIRRkqWYfPcvVxHzVzn5REgzbawhxAuQGwX1XWe70vji+VSeHOThJ" crossorigin="anonymous"></script>
         <link rel="stylesheet" href="/assets/css/index.css">
         <link rel="stylesheet" href="/assets/css/fonts.css">
         <link rel="icon" type="image/png" href="/assets/favicon.png">
+        <script src="/assets/js/encode_form.js"></script>
+        <script src="/assets/js/websocket.js"></script>
         <title>Convert a File</title>
     </head>
     <body>
         <div id="title">
             <h1 class="bebas-neue-bold">Simple File Converter</h1>
             <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
-            <script>
-                window.onload = function() {
-                    document.getElementById("convert").onsubmit = function () {
-                        document.getElementById("submit").disabled = true;
-                        document.body.style.cursor = "wait";
-                    }
-                }
-            </script>
         </div>
         <div id="content">
-            <form id="convert" action="/convert" method="post" enctype="multipart/form-data">
+            <form id="convert" action="/api/convert">
                 <input 
                     type="file" 
                     id="input-file"

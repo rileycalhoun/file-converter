@@ -1,5 +1,5 @@
 [package]
-name = "file-converter"
+name = "file_converter"
 version = "0.1.0"
 edition = "2021"
 
@@ -13,6 +13,17 @@ tracing = "0.1.40"
 anyhow = "1.0.86"
 bb8 = "0.8.5"
 tower = "0.5.0"
+headers = "0.4.0"
+rand = "0.8.5"
+lock_api = "0.4.12"
+tower-session = "0.0.0"
+tower-sessions = "0.13.0"
+web-push-native = "0.4.0"
+hyper-tls = "0.6.0"
+
+[dependencies.serde]
+version = "1.0.210"
+features = [ "derive" ]
 
 [dependencies.tokio]
 version = "1.39.3"
@@ -20,7 +31,11 @@ features = ["rt-multi-thread", "macros", "full"]
 
 [dependencies.axum]
 version = "0.7.5"
-features = ["multipart"]
+features = ["multipart", "ws"]
+
+[dependencies.axum-extra]
+version = "0.9.4"
+features = ["typed-header"]
 
 [dependencies.diesel]
 version = "2.2.4"

@@ -17,8 +17,9 @@ const AUTHORIZED_EXTENSIONS: [&str; 8] = [
     ".pdf"
 ];
 
-
-pub async fn root(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
+pub async fn index(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>
+) -> Html<String> {
     info!("[{}] Recieved GET request on /", addr);
     let index_template = Index {
         authorized_extensions: AUTHORIZED_EXTENSIONS.join(",")
