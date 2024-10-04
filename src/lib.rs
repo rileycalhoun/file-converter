@@ -19,7 +19,7 @@ pub enum JobStatus {
 
 pub struct SocketMessage {
     job_status: JobStatus,
-    file_name: String,
+    file_id: Option<i32>,
     job_id: JobId
 }
 

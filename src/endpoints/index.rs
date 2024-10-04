@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{env, net::SocketAddr};
 
 use askama::Template;
 use axum::{extract::ConnectInfo, response::Html};
@@ -52,9 +52,12 @@ pub async fn index(
 
     let id = session.id().unwrap();
 
+    let website_url = env::var("WEBSITE_URL").expect("Website URL must be set!");
+
     let index_template = Index {
         authorized_extensions: AUTHORIZED_EXTENSIONS.join(","),
-        session_id: id.to_string()
+        session_id: id.to_string(),
+        website_url
     };
 
     Html(index_template.render().unwrap())

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use tower::ServiceBuilder;
 use tracing::info;
 
 use std::{env, net::SocketAddr, sync::Arc};

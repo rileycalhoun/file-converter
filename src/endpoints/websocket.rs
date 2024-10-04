@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use axum::{extract::{ws::{Message, WebSocket}, ConnectInfo, State, WebSocketUpgrade}, response::IntoResponse};
 use tracing::{info, warn, error};
 
-use crate::{converter::jobs::JobId, JobStatus, SharedState, SocketMessage};
+use crate::{JobStatus, SharedState, SocketMessage};
 
 pub(super) async fn socket(
     State(state): State<SharedState>,
@@ -54,10 +54,10 @@ async fn handle_socket(
         let message = match status {
             JobStatus::PENDING => continue,
             JobStatus::FAILED => {
-                format!("job-failed;{}", msg.file_name)
+                format!("job-failed;{}", msg.job_id.0)
             },
             JobStatus::COMPLETED => {
-                format!("job-completed;{}", msg.job_id.0)
+                format!("job-completed;{}", msg.file_id.unwrap())
             }
         };
 
