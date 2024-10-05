@@ -28,6 +28,26 @@ h3 {
     font-size: 2em;
 }
 
+div#status {
+	visibility: hidden;
+
+	--error-color: #FA5858;
+	--error-border-color: #B40404;
+
+	--success-color: #81F79F;
+	--success-border-color: #04B431;
+
+	padding: 15px;
+	margin-bottom: 10px;
+	border-radius: 5px;
+	
+	background-color: var(--error-color);
+	border: var(--error-border-color);
+
+	font-size: 0.5em;
+	max-width: 30vw;
+}
+
 form {
     display: flex;
     flex-direction: column;

@@ -19,5 +19,10 @@ pub(crate) struct FileInfo {
 }
 
 #[derive(Template)]
+#[template(path = "search.html")]
+#[allow(dead_code)]
+pub(crate) struct Search;
+
+#[derive(Template)]
 #[template(path = "404.html")]
 pub(crate) struct NotFound;
