@@ -1,3 +1,4 @@
+{% if files.len() > 0 %}
 <ul id="files">
 {% for file in files %}
 	<li>
@@ -5,6 +6,8 @@
 	</li>
 {% endfor %}
 </ul>
-{% if files.len() == 0 %}
-	<h3 id="no-files">There are no files containing '{{search_term}}'!</h3>
+{% else %}
+<div id="no-files">
+	<h3>There were no files found containing '{{search_term}}'!</h3>
+</div>
 {% endif %}

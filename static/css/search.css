@@ -57,9 +57,31 @@ form>button {
     transition: background-color 0.3s, transform 0.2s;
 }
 
+form>button#back {
+	background-color: #F78181;
+}
+
 form>button:hover {
     background-color: #9955bb;
     transform: translateY(-2px)
+}
+
+form>button#back:hover {
+	background-color: #DF0101;
+}
+
+div>#no-files {
+	font-size: 1.5em;
+	margin: 10px;
+
+	width: 100vw;
+	display: flex;
+	flex-direction: row;
+	justify-content: center; 
+
+	h3 {
+		font-size: 1.5rem;
+	}
 }
 
 ul#files {
@@ -70,7 +92,7 @@ ul#files {
   border-radius: 5px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
   background-color: #f8f8f8;
-  height: 80vh;
+  min-height: 80vh;
 }
 
 ul#files>li {

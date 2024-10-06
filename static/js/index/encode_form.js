@@ -28,6 +28,7 @@ window.onload = async () => {
 
 		status.style.backgroundColor = background_color;
 		status.style.border = `5px, ${border_color}`;
+		status.style.display = "block";
 		status.style.visibility = "visible";
 	});
 }
