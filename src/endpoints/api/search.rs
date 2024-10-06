@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use askama::Template;
 use axum::{extract::ConnectInfo, response::{Html, IntoResponse, Response}, Form};
-use diesel::{BoolExpressionMethods, PgTextExpressionMethods, QueryDsl, SelectableHelper};
+use diesel::{PgTextExpressionMethods, QueryDsl, SelectableHelper};
 use diesel_async::RunQueryDsl;
 use serde::Deserialize;
 use tracing::info;
