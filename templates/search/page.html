@@ -5,12 +5,13 @@
         <link rel="stylesheet" href="/assets/css/fonts.css">
         <link rel="icon" type="image/png" href="/assets/favicon.png">
 		<script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
+        <script src="/assets/js/search/back_button.js"></script>
         <title>Convert a File</title>
     </head>
     <body>
         <div id="content">
             <form id="search" hx-encoding="application/x-www-form-urlencoded" hx-post="/api/search" hx-target="#results">
-				<h3 class="bebas-neue-bold">Search</h3>
+				<button id="back" type="button">Back</button>
 				<input type="text" name="search-term" id="search-term" placeholder="file_name.pdf"/>
                 <button id="submit" type="submit" class="bebas-neue-regular">
                     Search

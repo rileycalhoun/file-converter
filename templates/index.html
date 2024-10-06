@@ -6,16 +6,20 @@
         <link rel="icon" type="image/png" href="/assets/favicon.png">
         <script src="/assets/js/index/encode_form.js"></script>
         <script src="/assets/js/index/websocket.js"></script>
+        <script src="/assets/js/index/search_button.js"></script>
         <title>Convert a File</title>
     </head>
     <body>
-        <div id="title">
-            <h1 class="bebas-neue-bold">Simple File Converter</h1>
-            <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
-        </div>
+		<div id="header">
+			<button id="search">Search</button>
+		</div>
         <div id="content">
 			<div id="status">
 				<h3 id="status-message">Status Message</h3>
+			</div>
+			<div id="title">
+				<h1 class="bebas-neue-bold">Simple File Converter</h1>
+				<h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
 			</div>
             <form id="convert" action="/api/convert">
                 <input 
@@ -24,6 +28,7 @@
                     class="bebas-neue-regular"
                     name="input_file"
                     accept={{authorized_extensions}}
+					multiple
                     required
                 />
                 <div id="type-selector">

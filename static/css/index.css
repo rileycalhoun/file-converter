@@ -1,11 +1,8 @@
 body {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-direction: column;
     height: 100vh;
     margin: 0;
     background-color: #ffe4e1;
+	overflow-y: hidden;
 }
 
 #title {
@@ -28,7 +25,45 @@ h3 {
     font-size: 2em;
 }
 
+button {
+    padding: 12px 25px;
+    border: none;
+    border-radius: 8px;
+    background-color: #d8bfd8;
+    color: #333;
+    font-size: 1.1em;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.2s;
+}
+
+button:hover {
+    background-color: #9955bb;
+    transform: translateY(-2px)
+}
+
+div#header {
+	display: flex;	
+	flex-direction: row;
+	justify-content: right;
+	align-items: flex-start;
+
+	button {
+		margin-top: 10px;
+		margin-right: 10px;
+	}
+}
+
+div#content {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+
+	height: 100%;
+}
+
 div#status {
+	display: none;
 	visibility: hidden;
 
 	--error-color: #FA5858;
@@ -79,18 +114,3 @@ form>div>select {
     text-align: center;
 }
 
-form>button {
-    padding: 12px 25px;
-    border: none;
-    border-radius: 8px;
-    background-color: #d8bfd8;
-    color: #333;
-    font-size: 1.1em;
-    cursor: pointer;
-    transition: background-color 0.3s, transform 0.2s;
-}
-
-form>button:hover {
-    background-color: #9955bb;
-    transform: translateY(-2px)
-}
