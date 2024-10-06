@@ -1,7 +1,7 @@
 <ul id="files">
 {% for file in files %}
 	<li>
-		<a href="/files/{{file.id}}">{{file.file_name}}</a>
+		<a href="/files/{{file.id}}">File #{{file.id}}: {{file.file_name}}</a>
 	</li>
 {% endfor %}
 </ul>

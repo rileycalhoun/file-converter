@@ -62,32 +62,11 @@ form>button:hover {
     transform: translateY(-2px)
 }
 
-ul#files {
-  list-style: none;
-  padding: 10px;
-  margin: 0;
-  border: 1px solid #ddd;
-  border-radius: 5px;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-  background-color: #f8f8f8;
-  height: 80vh;
-}
-
 ul#files>li {
-  padding: 10px;
+	list-style: none;
+	padding: 10px;
 }
 
 ul#files>li>a {
-  text-decoration: none;
-  color: #333;
-  font-size: 1.5em;
-  display: block;
-  padding: 5px;
-  border-bottom: 1px solid #eee;
-  transition: background-color 0.3s ease;
-}
-
-ul#files>li>a:hover {
-  background-color: #e6e6e6;
-  cursor: pointer;
+	text-decoration: none;
 }
