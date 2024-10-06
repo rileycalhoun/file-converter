@@ -1,5 +1,7 @@
 use askama::Template;
 
+use crate::database::models::File;
+
 #[derive(Template)]
 #[template(path = "index.html")]
 #[allow(dead_code)]
@@ -19,9 +21,17 @@ pub(crate) struct FileInfo {
 }
 
 #[derive(Template)]
-#[template(path = "search.html")]
+#[template(path = "search/page.html")]
 #[allow(dead_code)]
 pub(crate) struct Search;
+
+#[derive(Template)]
+#[template(path = "search/results.html")]
+#[allow(dead_code)]
+pub(crate) struct SearchResults {
+    pub files: Vec<File>,
+    pub search_term: String
+}
 
 #[derive(Template)]
 #[template(path = "404.html")]

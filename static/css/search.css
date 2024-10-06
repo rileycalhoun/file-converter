@@ -61,3 +61,8 @@ form>button:hover {
     background-color: #9955bb;
     transform: translateY(-2px)
 }
+
+ul#files>li {
+	list-style: none;
+	padding: 10px;
+}
