@@ -1,0 +1,10 @@
+<ul id="files">
+{% for file in files %}
+	<li>
+		<a href="/files/{{file.id}}">{{file.file_name}}</a>
+	</li>
+{% endfor %}
+</ul>
+{% if files.len() == 0 %}
+	<h3 id="no-files">There are no files containing '{{search_term}}'!</h3>
+{% endif %}
