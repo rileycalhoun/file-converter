@@ -1,5 +1,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
+use fred::{prelude::{ClientLike, RedisClient, RedisPool}, types::RedisConfig};
+use tower_sessions_redis_store::RedisStore;
 use tracing::info;
 
 use std::{env, net::SocketAddr, sync::Arc};
@@ -34,7 +36,20 @@ async fn main() -> Result<()> {
             State::default(config).await
     );
 
-    let session_store = MemoryStore::default();
+    let redis_url = env::var("REDIS_URL")
+        .expect("REDIS_URL must be set! Check your .env file!");
+
+    let redis_config = RedisConfig::from_url(&redis_url)
+        .expect("Unable to connect to Redis server using provided details!");
+
+    let redis_client = RedisPool::new(redis_config, None, None, None, 6)
+        .expect("Unable to connect to Redis server using provided details!");
+
+    let _conn = redis_client.connect();
+    redis_client.wait_for_connect().await
+        .expect("Unable to connect to Redis server using provided details!");
+
+    let session_store = RedisStore::new(redis_client);
     let session_layer = SessionManagerLayer::new(session_store)
         .with_secure(false)
         .with_expiry(Expiry::AtDateTime(OffsetDateTime::now_utc().checked_add(Duration::days(1)).unwrap()));

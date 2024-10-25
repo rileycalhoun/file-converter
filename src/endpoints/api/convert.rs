@@ -22,6 +22,10 @@ pub async fn convert(
     let mut conversion_type: Option<String> = None;
     
     // If session_id is null, there is something wrong on the clients' end.
+    if session.id().is_none() {
+        return internal_error(ConverterError::Convert("You seem to be missing a session id! Please reload your browser."));   
+    }
+
     let session_id = session.id().unwrap();
 
     info!("[{}] Recieved POST request on /convert", addr);
