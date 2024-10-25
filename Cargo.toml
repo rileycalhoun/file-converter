@@ -15,6 +15,8 @@ bb8 = "0.8.5"
 tower-sessions = "0.13.0"
 async-recursion = "1.1.1"
 futures = "0.3.31"
+fred = "9.2.1"
+tower-sessions-redis-store = "0.14.0"
 
 [dependencies.serde]
 version = "1.0.210"
