@@ -1,51 +1,27 @@
 [package]
 name = "file_converter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-base64 = "0.22.1"
-dotenvy = "0.15.7"
 askama = "0.12.1"
-hyper = "1.4.1"
-serde_json = "1.0.127"
-tracing = "0.1.40"
 anyhow = "1.0.86"
-bb8 = "0.8.5"
-tower-sessions = "0.13.0"
 async-recursion = "1.1.1"
+axum = { version = "0.7.5", features = [ "multipart", "ws", "macros" ] }
+base64 = "0.22.1"
+bb8 = "0.8.5"
+dotenvy = "0.15.7"
+diesel = { version = "2.2.4", features = [ "postgres" ] }
+diesel-async = { version = "0.5.0", features = [ "bb8", "postgres" ] }
 futures = "0.3.31"
 fred = "9.2.1"
+hyper = "1.4.1"
+reqwest = { version = "0.12.7", features = [ "json" ] }
+serde = { version = "1.0.210", features = [ "derive" ] }
+serde_json = "1.0.127"
+tokio = { version = "1.39.3", features = [ "rt-multi-thread", "macros", "full" ] }
+tower-http = { version = "0.5.2", features = [ "fs", "trace" ] }
+tower-sessions = "0.13.0"
 tower-sessions-redis-store = "0.14.0"
-
-[dependencies.serde]
-version = "1.0.210"
-features = [ "derive" ]
-
-[dependencies.tokio]
-version = "1.39.3"
-features = ["rt-multi-thread", "macros", "full"]
-
-[dependencies.axum]
-version = "0.7.5"
-features = ["multipart", "ws", "macros"]
-
-[dependencies.diesel]
-version = "2.2.4"
-features = ["postgres"]
-
-[dependencies.diesel-async]
-version = "0.5.0"
-features = ["bb8", "postgres"]
-
-[dependencies.tower-http]
-version = "0.5.2"
-features = ["fs", "trace"]
-
-[dependencies.tracing-subscriber]
-version = "0.3.18"
-features = ["env-filter"]
-
-[dependencies.reqwest]
-version = "0.12.7"
-features = ["json"]
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = [ "env-filter" ] }
