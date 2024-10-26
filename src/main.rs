@@ -1,11 +1,11 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use fred::{prelude::{ClientLike, RedisClient, RedisPool}, types::RedisConfig};
+use fred::{prelude::{ClientLike, RedisPool}, types::RedisConfig};
 use tower_sessions_redis_store::RedisStore;
 use tracing::info;
 
 use std::{env, net::SocketAddr, sync::Arc};
-use tower_sessions::{cookie::time::{Duration, OffsetDateTime}, Expiry, MemoryStore, SessionManagerLayer};
+use tower_sessions::{cookie::time::{Duration, OffsetDateTime}, Expiry, SessionManagerLayer};
 use tracing_subscriber::{layer::SubscriberExt,util::SubscriberInitExt};
 use axum::extract::DefaultBodyLimit;
 use diesel_async::{
