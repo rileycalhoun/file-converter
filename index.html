@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Convert a File</title>
+  </head>
+  <body>
+    <div id="header">
+      <button id="search-button" type="button">Search</button>
+      <button id="settings-button" type="button">Settings</button>
+    </div>
+
+    <main id="content">
+      <div id="status" role="status">
+        <h3 id="status-message">Status Message</h3>
+      </div>
+      <div id="title">
+        <h1 class="bebas-neue-bold">Simple File Converter</h1>
+        <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
+      </div>
+      <form id="convert">
+        <div id="file-selector">
+          <button id="choose-file" type="button" class="bebas-neue-regular">Choose File</button>
+          <span id="selected-file">No file selected</span>
+        </div>
+        <div id="type-selector">
+          <select id="output-format" class="bebas-neue-regular" required>
+            <option value="pdf">PDF</option>
+            <option value="docx">DOCX</option>
+            <option value="pptx">PPTX</option>
+            <option value="png">PNG</option>
+            <option value="jpg">JPG</option>
+          </select>
+        </div>
+        <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
+      </form>
+    </main>
+
+    <main id="history-view" class="hidden">
+      <form id="search-form">
+        <button id="back-button" type="button">Back</button>
+        <input id="search-input" type="text" placeholder="file_name.pdf" />
+        <button id="refresh-button" type="button" class="bebas-neue-regular">Refresh</button>
+      </form>
+      <div id="history"></div>
+    </main>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <h3>Connection Settings</h3>
+        <label for="gateway-url">Gateway URL</label>
+        <input id="gateway-url" type="url" placeholder="https://converter.example.com" required />
+        <label for="gateway-token">Access Token</label>
+        <input id="gateway-token" type="password" placeholder="Leave blank to keep saved token" />
+        <p id="token-state"></p>
+        <div class="dialog-actions">
+          <button type="button" id="cancel-settings">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

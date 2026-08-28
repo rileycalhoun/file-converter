@@ -3,3 +3,10 @@ diesel.toml
 
 # Rust defaults
 /target
+
+# Frontend build output
+/dist
+/node_modules
+
+# Platform files
+.DS_Store

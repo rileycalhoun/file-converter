@@ -1,4 +1,4 @@
-name: Rust
+name: Build and test
 
 on:
   push:
@@ -11,12 +11,19 @@ env:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+    - name: Install frontend dependencies
+      run: npm ci
+    - name: Build frontend
+      run: npm run build
+    - name: Check Rust workspace
+      run: cargo check --workspace --locked
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --workspace --locked
