@@ -18,7 +18,7 @@
         <h3 id="status-message">Status Message</h3>
       </div>
       <div id="title">
-        <h1 class="bebas-neue-bold">Simple File Converter</h1>
+        <h1 class="bebas-neue-bold">File Converter</h1>
         <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
       </div>
       <form id="convert">
@@ -29,10 +29,6 @@
         <div id="type-selector">
           <select id="output-format" class="bebas-neue-regular" required>
             <option value="pdf">PDF</option>
-            <option value="docx">DOCX</option>
-            <option value="pptx">PPTX</option>
-            <option value="png">PNG</option>
-            <option value="jpg">JPG</option>
           </select>
         </div>
         <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
@@ -59,6 +55,17 @@
         <div class="dialog-actions">
           <button type="button" id="cancel-settings">Cancel</button>
           <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="restore-dialog">
+      <form id="restore-form" method="dialog">
+        <h3>File Missing</h3>
+        <p id="restore-message"></p>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel">Not Now</button>
+          <button type="submit" value="restore">Recreate File</button>
         </div>
       </form>
     </dialog>

@@ -5,7 +5,7 @@ mod secrets;
 use std::path::{Path, PathBuf};
 
 use database::{Conversion, Database, PublicSettings};
-use gateway::{GatewayClient, RemoteStatus};
+use gateway::GatewayClient;
 use secrets::SecretStore;
 use serde::Serialize;
 use tauri::{Manager, State};
@@ -22,9 +22,9 @@ struct AppState {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ConversionUpdate {
-    conversion: Conversion,
-    changed: bool,
+struct OpenConversionResult {
+    missing: bool,
+    restorable: bool,
 }
 
 #[tauri::command]
@@ -72,7 +72,6 @@ fn list_conversions(state: State<'_, AppState>) -> Result<Vec<Conversion>, Strin
 async fn start_conversion(
     state: State<'_, AppState>,
     input_path: String,
-    output_format: String,
 ) -> Result<Conversion, String> {
     let path = PathBuf::from(&input_path);
     let source_name = path
@@ -80,7 +79,6 @@ async fn start_conversion(
         .and_then(|name| name.to_str())
         .ok_or_else(|| "The selected file does not have a valid name.".to_string())?
         .to_string();
-    let output_format = normalized_format(&output_format)?;
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|error| format!("Could not read {source_name}: {error}"))?;
@@ -90,76 +88,35 @@ async fn start_conversion(
         .private_settings(gateway_token)
         .map_err(error_message)?;
     let id = state
-        .gateway
-        .create_conversion(&settings, &source_name, bytes, &output_format)
-        .await
-        .map_err(error_message)?;
-
-    state
         .database
-        .insert_conversion(id, &source_name, &output_format)
-        .map_err(error_message)
-}
+        .insert_conversion(Uuid::new_v4(), &source_name, "pdf")
+        .map_err(error_message)?
+        .id;
+    let output_name = pdf_file_name(&source_name);
+    let output_path = unique_output_path(&state.output_directory, id, &output_name);
 
-#[tauri::command]
-async fn refresh_conversion(
-    state: State<'_, AppState>,
-    id: Uuid,
-) -> Result<ConversionUpdate, String> {
-    let current = state.database.get_conversion(id).map_err(error_message)?;
-    if current.status == "finished" || current.status == "failed" {
-        return Ok(ConversionUpdate {
-            conversion: current,
-            changed: false,
-        });
+    let result = async {
+        let converted = state
+            .gateway
+            .convert_to_pdf(&settings, &source_name, bytes)
+            .await
+            .map_err(error_message)?;
+        tokio::fs::write(&output_path, &converted)
+            .await
+            .map_err(|error| format!("Could not save the converted PDF: {error}"))?;
+        state
+            .database
+            .mark_finished(id, &output_path, &converted)
+            .map_err(error_message)
     }
+    .await;
 
-    let gateway_token = state.secrets.gateway_token().map_err(error_message)?;
-    let settings = state
-        .database
-        .private_settings(gateway_token)
-        .map_err(error_message)?;
-    let remote = state
-        .gateway
-        .conversion_status(&settings, id)
-        .await
-        .map_err(error_message)?;
-
-    match remote {
-        RemoteStatus::Processing => Ok(ConversionUpdate {
-            conversion: current,
-            changed: false,
-        }),
-        RemoteStatus::Failed { message } => {
-            let conversion = state
-                .database
-                .mark_failed(id, &message)
-                .map_err(error_message)?;
-            Ok(ConversionUpdate {
-                conversion,
-                changed: true,
-            })
-        }
-        RemoteStatus::Finished { file_name } => {
-            let safe_name = safe_file_name(&file_name);
-            let output_path = unique_output_path(&state.output_directory, id, &safe_name);
-            let bytes = state
-                .gateway
-                .download(&settings, id)
-                .await
-                .map_err(error_message)?;
-            tokio::fs::write(&output_path, bytes)
-                .await
-                .map_err(|error| format!("Could not save the converted file: {error}"))?;
-            let conversion = state
-                .database
-                .mark_finished(id, &output_path)
-                .map_err(error_message)?;
-            Ok(ConversionUpdate {
-                conversion,
-                changed: true,
-            })
-        }
+    match result {
+        Ok(conversion) => Ok(conversion),
+        Err(error) => state
+            .database
+            .mark_failed(id, &error)
+            .map_err(error_message),
     }
 }
 
@@ -168,13 +125,52 @@ fn open_conversion(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: Uuid,
-) -> Result<(), String> {
+) -> Result<OpenConversionResult, String> {
     let conversion = state.database.get_conversion(id).map_err(error_message)?;
     let path = conversion
         .output_path
         .ok_or_else(|| "This conversion does not have a downloaded file yet.".to_string())?;
+    match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {
+            app.opener()
+                .open_path(path, None::<&str>)
+                .map_err(error_message)?;
+            Ok(OpenConversionResult {
+                missing: false,
+                restorable: false,
+            })
+        }
+        Ok(_) => Err("The saved output path is not a file.".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let restorable = state.database.has_stored_file(id).map_err(error_message)?;
+            Ok(OpenConversionResult {
+                missing: true,
+                restorable,
+            })
+        }
+        Err(error) => Err(format!("Could not check the converted file: {error}")),
+    }
+}
+
+#[tauri::command]
+fn restore_conversion(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<(), String> {
+    let stored = state.database.stored_file(id).map_err(error_message)?;
+    let output_name = pdf_file_name(&stored.source_name);
+    let output_path = unique_output_path(&state.output_directory, id, &output_name);
+    std::fs::create_dir_all(&state.output_directory)
+        .map_err(|error| format!("Could not prepare the converted-files folder: {error}"))?;
+    std::fs::write(&output_path, stored.bytes)
+        .map_err(|error| format!("Could not recreate the converted file: {error}"))?;
+    state
+        .database
+        .update_output_path(id, &output_path)
+        .map_err(error_message)?;
     app.opener()
-        .open_path(path, None::<&str>)
+        .open_path(output_path.to_string_lossy(), None::<&str>)
         .map_err(error_message)
 }
 
@@ -211,26 +207,14 @@ fn validate_gateway_url(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn normalized_format(value: &str) -> Result<String, String> {
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty()
-        || value.len() > 16
-        || !value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-    {
-        return Err("The output format is invalid.".into());
-    }
-    Ok(value)
-}
-
-fn safe_file_name(value: &str) -> String {
-    Path::new(value)
+fn pdf_file_name(value: &str) -> String {
+    let stem = Path::new(value)
         .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("converted-file")
-        .to_string()
+        .and_then(|name| Path::new(name).file_stem())
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("converted-file");
+    format!("{stem}.pdf")
 }
 
 fn unique_output_path(directory: &Path, id: Uuid, file_name: &str) -> PathBuf {
@@ -254,6 +238,9 @@ pub fn run() {
             let output_directory = app_data.join("converted-files");
             std::fs::create_dir_all(&output_directory)?;
             let database = Database::open(&app_data.join("file-converter.sqlite3"))?;
+            database.fail_interrupted_conversions()?;
+            database.migrate_legacy_base64_files()?;
+            database.backfill_stored_files()?;
             let secrets = SecretStore::new();
             if let Some(legacy_token) = database.legacy_gateway_token()? {
                 if !secrets.gateway_token_configured()? {
@@ -274,8 +261,8 @@ pub fn run() {
             save_settings,
             list_conversions,
             start_conversion,
-            refresh_conversion,
             open_conversion,
+            restore_conversion,
             delete_conversion,
         ])
         .run(tauri::generate_context!())
@@ -284,7 +271,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_format, safe_file_name, validate_gateway_url};
+    use super::{pdf_file_name, validate_gateway_url};
 
     #[test]
     fn gateway_requires_tls_except_during_local_development() {
@@ -294,9 +281,8 @@ mod tests {
     }
 
     #[test]
-    fn format_and_file_names_are_constrained() {
-        assert_eq!(normalized_format(" PDF ").unwrap(), "pdf");
-        assert!(normalized_format("../pdf").is_err());
-        assert_eq!(safe_file_name("../../example.pdf"), "example.pdf");
+    fn output_names_are_pdf_files() {
+        assert_eq!(pdf_file_name("letter.docx"), "letter.pdf");
+        assert_eq!(pdf_file_name("../../slides.pptx"), "slides.pdf");
     }
 }

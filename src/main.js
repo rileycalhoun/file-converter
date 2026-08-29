@@ -4,7 +4,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 const state = {
   selectedPath: null,
   conversions: [],
-  polling: new Set(),
 };
 
 const elements = {
@@ -15,7 +14,6 @@ const elements = {
   searchInput: document.querySelector("#search-input"),
   chooseFile: document.querySelector("#choose-file"),
   selectedFile: document.querySelector("#selected-file"),
-  outputFormat: document.querySelector("#output-format"),
   convertForm: document.querySelector("#convert"),
   convertButton: document.querySelector("#convert-button"),
   history: document.querySelector("#history"),
@@ -29,6 +27,8 @@ const elements = {
   gatewayUrl: document.querySelector("#gateway-url"),
   gatewayToken: document.querySelector("#gateway-token"),
   tokenState: document.querySelector("#token-state"),
+  restoreDialog: document.querySelector("#restore-dialog"),
+  restoreMessage: document.querySelector("#restore-message"),
 };
 
 elements.chooseFile.addEventListener("click", async () => {
@@ -36,8 +36,8 @@ elements.chooseFile.addEventListener("click", async () => {
     multiple: false,
     directory: false,
     filters: [{
-      name: "Documents and images",
-      extensions: ["jpg", "jpeg", "png", "ppt", "pptx", "doc", "docx", "pdf"],
+      name: "Documents and presentations",
+      extensions: ["doc", "docx", "ppt", "pptx", "xls", "xlsx", "odt", "odp", "ods", "rtf", "txt"],
     }],
   });
   if (!selected) return;
@@ -53,11 +53,19 @@ elements.convertForm.addEventListener("submit", async (event) => {
   try {
     const conversion = await invoke("start_conversion", {
       inputPath: state.selectedPath,
-      outputFormat: elements.outputFormat.value,
     });
     state.conversions.unshift(conversion);
-    showStatus("Your file is converting. It will be saved here when finished.", true);
-    beginPolling(conversion.id);
+    renderHistory();
+    if (conversion.status === "finished") {
+      showStatus(`${conversion.sourceName} was converted to PDF.`, true);
+      try {
+        await openConversion(conversion);
+      } catch (error) {
+        showStatus(`The PDF was saved, but it could not be opened: ${String(error)}`, false);
+      }
+    } else {
+      showStatus(conversion.error || "The document could not be converted.", false);
+    }
     state.selectedPath = null;
     elements.selectedFile.textContent = "No file selected";
   } catch (error) {
@@ -79,7 +87,7 @@ elements.backButton.addEventListener("click", () => {
 });
 
 elements.searchInput.addEventListener("input", renderHistory);
-elements.refreshButton.addEventListener("click", refreshAll);
+elements.refreshButton.addEventListener("click", loadHistory);
 elements.settingsButton.addEventListener("click", showSettings);
 elements.cancelSettings.addEventListener("click", () => elements.settingsDialog.close());
 
@@ -103,8 +111,10 @@ elements.history.addEventListener("click", async (event) => {
   if (!button) return;
   const { action, id } = button.dataset;
   try {
-    if (action === "open") await invoke("open_conversion", { id });
-    if (action === "check") beginPolling(id, true);
+    if (action === "open") {
+      const conversion = state.conversions.find((item) => item.id === id);
+      if (conversion) await openConversion(conversion);
+    }
     if (action === "delete") {
       await invoke("delete_conversion", { id });
       state.conversions = state.conversions.filter((item) => item.id !== id);
@@ -114,6 +124,28 @@ elements.history.addEventListener("click", async (event) => {
     showStatus(String(error), false);
   }
 });
+
+async function openConversion(conversion) {
+  const result = await invoke("open_conversion", { id: conversion.id });
+  if (!result.missing) return;
+  if (!result.restorable) {
+    throw new Error("The file is missing and this older history entry has no saved copy.");
+  }
+  if (!await confirmRestore(conversion.sourceName)) return;
+  await invoke("restore_conversion", { id: conversion.id });
+  showStatus(`${conversion.sourceName} was recreated from its saved copy.`, true);
+}
+
+function confirmRestore(sourceName) {
+  elements.restoreMessage.textContent = `${sourceName} is no longer at its saved location. Would you like File Converter to recreate and open it?`;
+  elements.restoreDialog.returnValue = "cancel";
+  elements.restoreDialog.showModal();
+  return new Promise((resolve) => {
+    elements.restoreDialog.addEventListener("close", () => {
+      resolve(elements.restoreDialog.returnValue === "restore");
+    }, { once: true });
+  });
+}
 
 async function showSettings() {
   try {
@@ -133,46 +165,8 @@ async function loadHistory() {
   try {
     state.conversions = await invoke("list_conversions");
     renderHistory();
-    state.conversions
-      .filter((conversion) => conversion.status === "processing")
-      .forEach((conversion) => beginPolling(conversion.id));
   } catch (error) {
     showStatus(String(error), false);
-  }
-}
-
-async function refreshAll() {
-  const pending = state.conversions.filter((item) => item.status === "processing");
-  await Promise.all(pending.map((item) => refreshOne(item.id)));
-}
-
-function beginPolling(id, immediate = false) {
-  if (state.polling.has(id)) return;
-  state.polling.add(id);
-  const poll = async () => {
-    const terminal = await refreshOne(id);
-    if (terminal) {
-      state.polling.delete(id);
-      return;
-    }
-    window.setTimeout(poll, 3000);
-  };
-  window.setTimeout(poll, immediate ? 0 : 1500);
-}
-
-async function refreshOne(id) {
-  try {
-    const update = await invoke("refresh_conversion", { id });
-    const index = state.conversions.findIndex((item) => item.id === id);
-    if (index >= 0) state.conversions[index] = update.conversion;
-    renderHistory();
-    if (update.changed && update.conversion.status === "finished") {
-      showStatus(`${update.conversion.sourceName} is ready.`, true);
-    }
-    return update.conversion.status !== "processing";
-  } catch (error) {
-    showStatus(String(error), false);
-    return true;
   }
 }
 
@@ -190,14 +184,13 @@ function renderHistory() {
   }
 
   elements.history.innerHTML = `<ul id="files">${conversions.map((conversion) => {
-    const action = conversion.status === "finished" ? "open" : "check";
-    const actionText = conversion.status === "finished" ? "Open" : "Check";
+    const canOpen = conversion.status === "finished";
     return `<li>
-      <button class="file-link" data-action="${action}" data-id="${conversion.id}">
+      <button class="file-link" ${canOpen ? `data-action="open" data-id="${conversion.id}"` : "disabled"}>
         ${escapeHtml(conversion.sourceName)} → ${escapeHtml(conversion.outputFormat.toUpperCase())}
       </button>
       <span class="status-label">${escapeHtml(conversion.status)}</span>
-      <button data-action="${action}" data-id="${conversion.id}">${actionText}</button>
+      ${canOpen ? `<button data-action="open" data-id="${conversion.id}">Open</button>` : ""}
       <button class="remove-button" data-action="delete" data-id="${conversion.id}">Remove</button>
     </li>`;
   }).join("")}</ul>`;

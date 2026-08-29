@@ -5,8 +5,7 @@ use anyhow::{Context, Result};
 pub struct Config {
     pub bind_address: SocketAddr,
     pub gateway_token: String,
-    pub cloudconvert_api_key: String,
-    pub cloudconvert_api_base: String,
+    pub gotenberg_url: String,
 }
 
 impl Config {
@@ -16,17 +15,20 @@ impl Config {
             .parse()
             .context("BIND_ADDRESS must be a socket address such as 127.0.0.1:8080")?;
         let gateway_token = required("GATEWAY_TOKEN")?;
-        let cloudconvert_api_key = required("CLOUDCONVERT_API_KEY")?;
-        let cloudconvert_api_base = env::var("CLOUDCONVERT_API_BASE")
-            .unwrap_or_else(|_| "https://api.cloudconvert.com".into())
+        let gotenberg_url = env::var("GOTENBERG_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3000".into())
             .trim_end_matches('/')
             .to_string();
+        let parsed = reqwest::Url::parse(&gotenberg_url)
+            .context("GOTENBERG_URL must be a complete HTTP or HTTPS URL")?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            anyhow::bail!("GOTENBERG_URL must be a complete HTTP or HTTPS URL");
+        }
 
         Ok(Self {
             bind_address,
             gateway_token,
-            cloudconvert_api_key,
-            cloudconvert_api_base,
+            gotenberg_url,
         })
     }
 }

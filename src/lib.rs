@@ -1,12 +1,12 @@
-mod cloudconvert;
 mod config;
+mod gotenberg;
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
+    extract::{DefaultBodyLimit, Multipart, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -16,23 +16,16 @@ use axum::{
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
-use uuid::Uuid;
 
-use cloudconvert::CloudConvertClient;
 use config::Config;
+use gotenberg::{output_file_name, GotenbergClient};
 
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
     auth_token: Arc<str>,
-    cloudconvert: CloudConvertClient,
-}
-
-#[derive(Serialize)]
-struct CreateConversionResponse {
-    id: Uuid,
-    status: &'static str,
+    gotenberg: GotenbergClient,
 }
 
 #[derive(Serialize)]
@@ -52,17 +45,14 @@ pub async fn run() -> Result<()> {
     let config = Config::from_env()?;
     let state = AppState {
         auth_token: Arc::from(config.gateway_token),
-        cloudconvert: CloudConvertClient::new(
-            config.cloudconvert_api_key,
-            config.cloudconvert_api_base,
-        )?,
+        gotenberg: GotenbergClient::new(config.gotenberg_url)?,
     };
 
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(config.bind_address)
         .await
         .context("failed to bind the gateway address")?;
-    info!(address = %listener.local_addr()?, "CloudConvert gateway listening");
+    info!(address = %listener.local_addr()?, "Gotenberg gateway listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -72,9 +62,7 @@ pub async fn run() -> Result<()> {
 
 fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/conversions", post(create_conversion))
-        .route("/v1/conversions/:id", get(conversion_status))
-        .route("/v1/conversions/:id/download", get(download_conversion))
+        .route("/v1/convert", post(convert_file))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     Router::new()
@@ -89,10 +77,9 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn create_conversion(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+async fn convert_file(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     let mut file_name = None;
     let mut file_bytes = None;
-    let mut output_format = None;
 
     loop {
         let field = match multipart.next_field().await {
@@ -101,21 +88,12 @@ async fn create_conversion(State(state): State<AppState>, mut multipart: Multipa
             Err(error) => return bad_request(format!("invalid multipart upload: {error}")),
         };
 
-        match field.name() {
-            Some("file") => {
-                file_name = field.file_name().map(sanitize_file_name);
-                match field.bytes().await {
-                    Ok(bytes) => file_bytes = Some(bytes),
-                    Err(error) => {
-                        return bad_request(format!("could not read uploaded file: {error}"))
-                    }
-                }
+        if let Some("file") = field.name() {
+            file_name = field.file_name().map(sanitize_file_name);
+            match field.bytes().await {
+                Ok(bytes) => file_bytes = Some(bytes),
+                Err(error) => return bad_request(format!("could not read uploaded file: {error}")),
             }
-            Some("output_format") => match field.text().await {
-                Ok(value) => output_format = Some(value),
-                Err(error) => return bad_request(format!("invalid output format: {error}")),
-            },
-            _ => {}
         }
     }
 
@@ -125,49 +103,16 @@ async fn create_conversion(State(state): State<AppState>, mut multipart: Multipa
     let Some(file_bytes) = file_bytes else {
         return bad_request("a file is required");
     };
-    let Some(output_format) = output_format else {
-        return bad_request("an output format is required");
-    };
-    let output_format = output_format.trim().to_ascii_lowercase();
-    if !is_valid_format(&output_format) {
-        return bad_request("the output format must contain only letters and numbers");
-    }
-
-    match state
-        .cloudconvert
-        .create_job(&file_name, &file_bytes, &output_format)
-        .await
-    {
-        Ok(id) => (
-            StatusCode::ACCEPTED,
-            Json(CreateConversionResponse {
-                id,
-                status: "processing",
-            }),
-        )
-            .into_response(),
-        Err(error) => upstream_error(error),
-    }
-}
-
-async fn conversion_status(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match state.cloudconvert.job_status(id).await {
-        Ok(status) => Json(status).into_response(),
-        Err(error) => upstream_error(error),
-    }
-}
-
-async fn download_conversion(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    match state.cloudconvert.download(id).await {
-        Ok(file) => {
-            let disposition = format!("attachment; filename=\"{}\"", file.file_name);
+    match state.gotenberg.convert_to_pdf(&file_name, file_bytes).await {
+        Ok(bytes) => {
+            let disposition = format!("attachment; filename=\"{}\"", output_file_name(&file_name));
             (
                 StatusCode::OK,
                 [
-                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                    (header::CONTENT_TYPE, "application/pdf".to_string()),
                     (header::CONTENT_DISPOSITION, disposition),
                 ],
-                Body::from(file.bytes),
+                Body::from(bytes),
             )
                 .into_response()
         }
@@ -195,14 +140,6 @@ async fn require_auth(State(state): State<AppState>, request: Request, next: Nex
     }
 }
 
-fn is_valid_format(format: &str) -> bool {
-    !format.is_empty()
-        && format.len() <= 16
-        && format
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric())
-}
-
 fn sanitize_file_name(value: &str) -> String {
     std::path::Path::new(value)
         .file_name()
@@ -222,11 +159,11 @@ fn bad_request(message: impl Into<String>) -> Response {
 }
 
 fn upstream_error(error: anyhow::Error) -> Response {
-    warn!(%error, "CloudConvert request failed");
+    warn!(%error, "Gotenberg conversion failed");
     (
         StatusCode::BAD_GATEWAY,
         Json(ErrorResponse {
-            error: "the conversion provider request failed".into(),
+            error: "the document could not be converted to PDF".into(),
         }),
     )
         .into_response()
@@ -261,26 +198,14 @@ mod tests {
     use std::sync::Arc;
 
     use axum::{
-        body::Body,
-        http::{Request, StatusCode},
+        body::{to_bytes, Body},
+        http::{header, Request, StatusCode},
+        routing::post,
+        Router,
     };
     use tower::ServiceExt;
 
-    use super::{is_valid_format, router, sanitize_file_name, AppState, CloudConvertClient};
-
-    #[test]
-    fn accepts_normal_output_formats() {
-        assert!(is_valid_format("pdf"));
-        assert!(is_valid_format("docx"));
-        assert!(is_valid_format("jpg2000"));
-    }
-
-    #[test]
-    fn rejects_format_injection() {
-        assert!(!is_valid_format("../pdf"));
-        assert!(!is_valid_format("pdf?x=1"));
-        assert!(!is_valid_format(""));
-    }
+    use super::{router, sanitize_file_name, AppState, GotenbergClient};
 
     #[test]
     fn strips_paths_from_upload_names() {
@@ -291,17 +216,13 @@ mod tests {
     async fn conversion_routes_require_authentication() {
         let state = AppState {
             auth_token: Arc::from("test-token"),
-            cloudconvert: CloudConvertClient::new(
-                "unused-key".into(),
-                "https://api.cloudconvert.com".into(),
-            )
-            .unwrap(),
+            gotenberg: GotenbergClient::new("http://127.0.0.1:3000".into()).unwrap(),
         };
         let response = router(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/conversions")
+                    .uri("/v1/convert")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -309,5 +230,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires permission to bind a loopback test server"]
+    async fn conversion_route_returns_the_pdf_from_gotenberg() {
+        let gotenberg = Router::new().route(
+            "/forms/libreoffice/convert",
+            post(|| async { ([(header::CONTENT_TYPE, "application/pdf")], "%PDF-test") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, gotenberg).await.unwrap();
+        });
+
+        let state = AppState {
+            auth_token: Arc::from("test-token"),
+            gotenberg: GotenbergClient::new(format!("http://{address}")).unwrap(),
+        };
+        let boundary = "file-converter-test-boundary";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"letter.docx\"\r\nContent-Type: application/octet-stream\r\n\r\ntest document\r\n--{boundary}--\r\n"
+        );
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/convert")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/pdf");
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"%PDF-test");
     }
 }

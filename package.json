@@ -1,5 +1,5 @@
 {
-  "name": "simple-file-converter",
+  "name": "file-converter",
   "private": true,
   "version": "0.3.0",
   "type": "module",
