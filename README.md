@@ -60,11 +60,12 @@ selected WASM package's declared browser API.
 
 ## Storage and history
 
-The application stores its SQLite database and `converted-files` directory in
-the operating system's application-data directory. New history rows store
-metadata and the output path, not a second PDF BLOB. Schema upgrades add source
-path, detected format, engine, sizes, and completion time without recreating the
-database.
+Converted PDFs are saved in the same directory as their selected source files.
+Collision-safe filenames prevent an existing PDF from being overwritten. The
+application stores its SQLite database in the operating system's application-data
+directory. New history rows store metadata and the output path, not a second PDF
+BLOB. Schema upgrades add source path, detected format, engine, sizes, and
+completion time without recreating the database.
 
 Legacy `output_data` and `output_base64` columns remain readable so older output
 copies can still be restored. New conversions never populate them. If a new

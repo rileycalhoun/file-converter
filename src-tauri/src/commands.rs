@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{ipc::InvokeBody, State};
+use tauri::{ipc::InvokeBody, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
@@ -173,15 +173,32 @@ pub(crate) fn restore_conversion(
     state: State<'_, AppState>,
     id: Uuid,
 ) -> Result<(), String> {
+    let conversion = state
+        .service
+        .database()
+        .get_conversion(id)
+        .map_err(error_message)?;
     let stored = state
         .service
         .database()
         .stored_file(id)
         .map_err(error_message)?;
     let output_name = crate::conversion::pdf_file_name(&stored.source_name);
-    let output_path = unique_output_path(&state.output_directory, id, &output_name);
-    std::fs::create_dir_all(&state.output_directory)
-        .map_err(|error| format!("Could not prepare the converted-files folder: {error}"))?;
+    let output_directory = conversion
+        .source_path
+        .as_deref()
+        .and_then(|source| Path::new(source).parent())
+        .filter(|directory| directory.is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or(
+            app.path()
+                .app_data_dir()
+                .map_err(error_message)?
+                .join("legacy-restored-files"),
+        );
+    let output_path = unique_output_path(&output_directory, id, &output_name);
+    std::fs::create_dir_all(&output_directory)
+        .map_err(|error| format!("Could not prepare the output folder: {error}"))?;
     std::fs::write(&output_path, stored.bytes)
         .map_err(|error| format!("Could not recreate the converted file: {error}"))?;
     state

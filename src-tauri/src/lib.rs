@@ -2,7 +2,7 @@ mod commands;
 mod conversion;
 mod database;
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use conversion::ConversionService;
 use database::Database;
@@ -10,7 +10,6 @@ use tauri::Manager;
 
 struct AppState {
     service: ConversionService,
-    output_directory: PathBuf,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,21 +19,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir().map_err(anyhow::Error::msg)?;
-            let output_directory = app_data.join("converted-files");
             let work_root = app
                 .path()
                 .app_cache_dir()
                 .map_err(anyhow::Error::msg)?
                 .join("conversion-work");
-            std::fs::create_dir_all(&output_directory)?;
             let database = Arc::new(Database::open(&app_data.join("file-converter.sqlite3"))?);
             database.fail_interrupted_conversions()?;
-            let service = ConversionService::new(database, output_directory.clone(), work_root);
+            let service = ConversionService::new(database, work_root);
             service.cleanup_stale_workdirs()?;
-            app.manage(AppState {
-                service,
-                output_directory,
-            });
+            app.manage(AppState { service });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -94,17 +94,15 @@ pub struct ConversionStart {
 
 pub struct ConversionService {
     database: Arc<Database>,
-    output_directory: PathBuf,
     work_root: PathBuf,
     engines: Vec<Arc<dyn ConversionEngine>>,
     pending_wasm: Mutex<HashMap<Uuid, ConversionRequest>>,
 }
 
 impl ConversionService {
-    pub fn new(database: Arc<Database>, output_directory: PathBuf, work_root: PathBuf) -> Self {
+    pub fn new(database: Arc<Database>, work_root: PathBuf) -> Self {
         Self::new_with_engines(
             database,
-            output_directory,
             work_root,
             vec![
                 Arc::new(PdfPassthroughEngine),
@@ -116,13 +114,11 @@ impl ConversionService {
 
     fn new_with_engines(
         database: Arc<Database>,
-        output_directory: PathBuf,
         work_root: PathBuf,
         engines: Vec<Arc<dyn ConversionEngine>>,
     ) -> Self {
         Self {
             database,
-            output_directory,
             work_root,
             engines,
             pending_wasm: Mutex::new(HashMap::new()),
@@ -213,7 +209,15 @@ impl ConversionService {
 
         let id = Uuid::new_v4();
         let output_name = pdf_file_name(&source_name);
-        let output_path = unique_output_path(&self.output_directory, id, &output_name);
+        let output_directory = source_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .ok_or_else(|| {
+                ConversionError::DetectionFailed(
+                    "The selected file does not have a usable parent folder.".into(),
+                )
+            })?;
+        let output_path = unique_output_path(output_directory, id, &output_name);
         let work_directory = self.work_root.join(id.to_string());
         std::fs::create_dir_all(&work_directory).map_err(|source| {
             ConversionError::OutputWriteFailed {
@@ -362,19 +366,17 @@ impl ConversionService {
         request: &ConversionRequest,
         result: ConversionResult,
     ) -> Result<Conversion, ConversionError> {
-        std::fs::create_dir_all(&self.output_directory).map_err(|source| {
-            ConversionError::OutputWriteFailed {
-                path: self.output_directory.clone(),
-                source,
-            }
-        })?;
         let staged = request.staged_output_path();
-        std::fs::rename(&staged, &request.output_path).map_err(|source| {
-            ConversionError::OutputWriteFailed {
+        if let Err(source) = std::fs::copy(&staged, &request.output_path) {
+            let error = ConversionError::OutputWriteFailed {
                 path: request.output_path.clone(),
                 source,
-            }
-        })?;
+            };
+            let _ = std::fs::remove_file(&request.output_path);
+            self.cleanup_request(request);
+            let _ = self.database.mark_failed(request.id, &error.to_string());
+            return Err(error);
+        }
         let conversion = match self.database.mark_finished(
             request.id,
             &request.output_path,
@@ -435,7 +437,7 @@ pub fn unique_output_path(directory: &Path, id: Uuid, file_name: &str) -> PathBu
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{path::PathBuf, sync::Arc};
 
     use super::{pdf_file_name, ConversionService};
     use crate::database::Database;
@@ -451,33 +453,25 @@ mod tests {
     async fn existing_pdf_is_copied_and_recorded() {
         let directory = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
-        let service = ConversionService::new(
-            database,
-            directory.path().join("output"),
-            directory.path().join("work"),
-        );
+        let service = ConversionService::new(database, directory.path().join("work"));
         let source = directory.path().join("already.pdf");
         std::fs::write(&source, b"%PDF-1.7\nfixture").unwrap();
-        let started = service.start(source).await.unwrap();
+        let started = service.start(source.clone()).await.unwrap();
         assert_eq!(started.conversion.status, "finished");
         assert_eq!(
             started.conversion.engine.as_deref(),
             Some("pdf-passthrough")
         );
-        assert!(std::fs::read(started.conversion.output_path.unwrap())
-            .unwrap()
-            .starts_with(b"%PDF-"));
+        let output_path = PathBuf::from(started.conversion.output_path.unwrap());
+        assert_eq!(output_path.parent(), source.parent());
+        assert!(std::fs::read(output_path).unwrap().starts_with(b"%PDF-"));
     }
 
     #[tokio::test]
     async fn reconvert_fails_when_the_original_is_missing() {
         let directory = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
-        let service = ConversionService::new(
-            database,
-            directory.path().join("output"),
-            directory.path().join("work"),
-        );
+        let service = ConversionService::new(database, directory.path().join("work"));
         let source = directory.path().join("already.pdf");
         std::fs::write(&source, b"%PDF-1.7\nfixture").unwrap();
         let id = service.start(source.clone()).await.unwrap().conversion.id;
@@ -489,11 +483,7 @@ mod tests {
     async fn office_routes_to_wasm_and_failures_are_recorded() {
         let directory = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
-        let service = ConversionService::new(
-            database,
-            directory.path().join("output"),
-            directory.path().join("work"),
-        );
+        let service = ConversionService::new(database, directory.path().join("work"));
         let source = directory.path().join("notes.txt");
         std::fs::write(&source, b"local fixture").unwrap();
         let started = service.start(source).await.unwrap();
@@ -514,11 +504,7 @@ mod tests {
     async fn cancellation_rejects_stale_wasm_output() {
         let directory = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
-        let service = ConversionService::new(
-            database,
-            directory.path().join("output"),
-            directory.path().join("work"),
-        );
+        let service = ConversionService::new(database, directory.path().join("work"));
         let source = directory.path().join("notes.txt");
         std::fs::write(&source, b"local fixture").unwrap();
         let task = service.start(source).await.unwrap().wasm_task.unwrap();
@@ -533,11 +519,7 @@ mod tests {
     async fn missing_pdf_can_be_reconverted_when_source_exists() {
         let directory = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
-        let service = ConversionService::new(
-            database,
-            directory.path().join("output"),
-            directory.path().join("work"),
-        );
+        let service = ConversionService::new(database, directory.path().join("work"));
         let source = directory.path().join("already.pdf");
         std::fs::write(&source, b"%PDF-1.7\nfixture").unwrap();
         let first = service.start(source).await.unwrap().conversion;
