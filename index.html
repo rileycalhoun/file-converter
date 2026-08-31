@@ -9,17 +9,17 @@
   </head>
   <body>
     <div id="header">
-      <button id="search-button" type="button">Search</button>
       <button id="settings-button" type="button">Settings</button>
     </div>
 
     <main id="content">
-      <div id="status" role="status">
-        <h3 id="status-message">Status Message</h3>
-      </div>
       <div id="title">
         <h1 class="bebas-neue-bold">File Converter</h1>
         <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
+        <p>Turn documents and images into PDFs in just a few clicks.</p>
+      </div>
+      <div id="status" role="status" aria-live="polite">
+        <p id="status-message"></p>
       </div>
       <form id="convert">
         <div id="file-selector">
@@ -27,21 +27,14 @@
           <span id="selected-file">No file selected</span>
         </div>
         <div id="type-selector">
+          <span>Convert to</span>
           <select id="output-format" class="bebas-neue-regular" required>
             <option value="pdf">PDF</option>
           </select>
         </div>
         <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
       </form>
-    </main>
-
-    <main id="history-view" class="hidden">
-      <form id="search-form">
-        <button id="back-button" type="button">Back</button>
-        <input id="search-input" type="text" placeholder="file_name.pdf" />
-        <button id="refresh-button" type="button" class="bebas-neue-regular">Refresh</button>
-      </form>
-      <div id="history"></div>
+      <p id="privacy-note">Your files stay private and never leave this device.</p>
     </main>
 
     <dialog id="settings-dialog">
@@ -51,18 +44,6 @@
         <div id="supported-list"></div>
         <div class="dialog-actions">
           <button type="button" data-close="settings-dialog">Close</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="restore-dialog">
-      <form id="restore-form">
-        <h3>File Missing</h3>
-        <p id="restore-message"></p>
-        <div class="dialog-actions">
-          <button type="button" data-close="restore-dialog">Not Now</button>
-          <button type="button" id="restore-button" class="hidden">Restore legacy copy</button>
-          <button type="button" id="reconvert-button" class="hidden">Reconvert</button>
         </div>
       </form>
     </dialog>
