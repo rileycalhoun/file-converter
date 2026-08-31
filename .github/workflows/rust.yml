@@ -1,29 +1,125 @@
-name: Build and test
+name: CI and Release
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [main, master]
+    tags: ["v*"]
   pull_request:
-    branches: [ "master" ]
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  validate:
+    name: Validate
     runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 22
-        cache: npm
-    - name: Install frontend dependencies
-      run: npm ci
-    - name: Build frontend
-      run: npm run build
-    - name: Check Rust workspace
-      run: cargo check --workspace --locked
-    - name: Run tests
-      run: cargo test --workspace --locked
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run LibreOffice WASM smoke tests
+        run: npm run test:libreoffice
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run Rust tests
+        run: cargo test --workspace --locked
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Verify release tag and branch
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          test "$VERSION" = "$PACKAGE_VERSION"
+          test "$VERSION" = "$TAURI_VERSION"
+          grep -q "^version = \"$VERSION\"$" src-tauri/Cargo.toml
+          git branch -r --contains "$GITHUB_SHA" | grep -Eq 'origin/(main|master)$'
+
+  release:
+    name: Publish macOS release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: validate
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish universal macOS app
+        uses: tauri-apps/tauri-action@v1
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "File Converter ${{ github.ref_name }}"
+          releaseBody: |
+            File Converter converts documents and images to PDF locally on macOS.
+
+            This build is ad-hoc signed and is not notarized. macOS may require
+            approval in System Settings > Privacy & Security before first launch.
+          releaseDraft: false
+          prerelease: false
+          args: --target universal-apple-darwin

@@ -127,13 +127,13 @@ cargo test --workspace
 npm run tauri build
 ```
 
-Installers are written below `target/release/bundle`. Tauri installers are built
-on their target operating system; produce separate macOS, Windows, and Linux
-artifacts in a platform matrix. The package includes all LibreOffice WASM
-runtime assets. End users do not need Node.js, Rust, Python, Docker, Gotenberg,
-or LibreOffice. Distribution builds should be signed and, on macOS, notarized
-with the platform credentials for the release organization; local development
-builds are intentionally unsigned.
+Installers are written below `target/release/bundle`. Version 1.0 supports macOS
+and is distributed as a universal app for Apple Silicon and Intel Macs. The
+package includes all LibreOffice WASM runtime assets. End users do not need
+Node.js, Rust, Python, Docker, Gotenberg, or LibreOffice. Version 1.0 release
+artifacts use an ad-hoc signature and are not notarized, so macOS may require the
+app to be approved in **System Settings > Privacy & Security** before its first
+launch.
 
 The uncompressed LibreOffice runtime adds approximately 236 MiB to the app
 bundle (`soffice.wasm` is about 141 MiB and `soffice.data` about 95 MiB).
@@ -173,3 +173,17 @@ image/PDF dependency licensing.
   their roughly 250 MiB additional size.
 - Browser-worker compatibility must be verified on each supported OS WebView as
   part of release testing.
+
+## Releases
+
+Pull requests targeting `main` or `master` must pass frontend compilation, the
+LibreOffice WASM conversion suite, Rust formatting, compilation, tests, and
+Clippy. A tag matching the application version, such as `v1.0.0`, automatically
+builds a universal macOS bundle and publishes it to GitHub Releases. The tagged
+commit must already belong to `main` or `master`.
+
+## License
+
+File Converter is licensed under the [Apache License 2.0](LICENSE). Bundled
+third-party components remain under their respective licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
