@@ -196,6 +196,20 @@ impl ConversionService {
             .ok_or_else(|| {
                 ConversionError::UnsupportedFormat(detected.format.extension().into())
             })?;
+        if engine.id() == "libreoffice-wasm"
+            && !self
+                .pending_wasm
+                .lock()
+                .map_err(|_| {
+                    ConversionError::ConversionFailed("conversion queue lock was poisoned".into())
+                })?
+                .is_empty()
+        {
+            return Err(ConversionError::ConversionFailed(
+                "Another LibreOffice conversion is already running. Wait for it to finish or cancel it."
+                    .into(),
+            ));
+        }
 
         let id = Uuid::new_v4();
         let output_name = pdf_file_name(&source_name);
@@ -299,10 +313,15 @@ impl ConversionService {
         }
         let request = self.take_pending(id)?;
         let staged = request.staged_output_path();
-        std::fs::write(&staged, pdf).map_err(|source| ConversionError::OutputWriteFailed {
-            path: staged,
-            source,
-        })?;
+        if let Err(source) = std::fs::write(&staged, pdf) {
+            let error = ConversionError::OutputWriteFailed {
+                path: staged,
+                source,
+            };
+            self.cleanup_request(&request);
+            let _ = self.database.mark_failed(id, &error.to_string());
+            return Err(error);
+        }
         self.finish_request(
             &request,
             ConversionResult {
@@ -356,15 +375,19 @@ impl ConversionService {
                 source,
             }
         })?;
-        let conversion = self
-            .database
-            .mark_finished(
-                request.id,
-                &request.output_path,
-                &result.engine,
-                result.output_size,
-            )
-            .map_err(|error| ConversionError::Persistence(error.to_string()))?;
+        let conversion = match self.database.mark_finished(
+            request.id,
+            &request.output_path,
+            &result.engine,
+            result.output_size,
+        ) {
+            Ok(conversion) => conversion,
+            Err(error) => {
+                let _ = std::fs::remove_file(&request.output_path);
+                self.cleanup_request(request);
+                return Err(ConversionError::Persistence(error.to_string()));
+            }
+        };
         self.cleanup_request(request);
         Ok(conversion)
     }
@@ -485,5 +508,43 @@ mod tests {
             .unwrap();
         assert_eq!(failed.status, "failed");
         assert!(failed.error.unwrap().contains("conversion failed"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_rejects_stale_wasm_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(
+            database,
+            directory.path().join("output"),
+            directory.path().join("work"),
+        );
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"local fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+        let cancelled = service.cancel(task.conversion_id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(service
+            .complete_wasm(task.conversion_id, b"%PDF-1.7\nstale")
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_pdf_can_be_reconverted_when_source_exists() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(
+            database,
+            directory.path().join("output"),
+            directory.path().join("work"),
+        );
+        let source = directory.path().join("already.pdf");
+        std::fs::write(&source, b"%PDF-1.7\nfixture").unwrap();
+        let first = service.start(source).await.unwrap().conversion;
+        std::fs::remove_file(first.output_path.as_ref().unwrap()).unwrap();
+        let second = service.reconvert(first.id).await.unwrap().conversion;
+        assert_eq!(second.status, "finished");
+        assert_ne!(second.id, first.id);
+        assert!(std::path::Path::new(second.output_path.as_ref().unwrap()).is_file());
     }
 }

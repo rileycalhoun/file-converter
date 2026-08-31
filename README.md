@@ -1,80 +1,167 @@
 # File Converter
 
-A Tauri desktop application that converts Office and OpenDocument files to PDF through a private Gotenberg server. Conversion history and output files stay on the desktop.
+File Converter is a self-contained Tauri desktop application that converts
+documents and images to PDF locally. Files are converted on your device and are
+not uploaded to a conversion server. Normal operation requires no Internet
+connection, account, token, Docker service, or separately installed copy of
+LibreOffice.
 
 ## Architecture
 
 ```text
-Tauri desktop app              Private home gateway          Gotenberg
------------------             --------------------          ----------
-Bundled HTML/CSS/JS  HTTPS    Authenticated Axum API  HTTP   LibreOffice
-Rust commands         ----->  Upload proxy             ----> PDF conversion
-SQLite history        <-----  PDF response              <---- PDF output
-Local output files
+Tauri UI
+   │ raw binary IPC (never JSON/base64 file payloads)
+   ▼
+Rust ConversionService
+   │
+   ├── format detection and supported-format registry
+   ├── LibreOffice WASM engine ──► isolated reusable Web Worker
+   ├── native image-to-PDF engine
+   └── PDF passthrough engine
+   │
+   ▼
+Local PDF + SQLite metadata history
 ```
 
-The conversion request returns the PDF directly. Hosted conversion APIs, PostgreSQL, Redis, browser sessions, WebSockets, polling, and webhooks are not required.
+Rust owns format detection, routing, job lifecycle, cancellation state, output
+paths, temporary files, and history. The frontend is a thin Tauri client and
+hosts the browser worker required by LibreOffice WASM. Large file payloads cross
+the Tauri boundary as raw binary bodies rather than JSON arrays or base64.
 
-## Server setup
+LibreOffice work is serialized through one lazily initialized
+`WorkerBrowserConverter`. It stays off the UI thread and is reused between jobs.
+The package does not currently expose an abort primitive. Cancellation therefore
+marks the backend job cancelled immediately and guarantees that a late worker
+result cannot be saved; the underlying WASM operation may continue until it
+returns.
 
-The root Rust package is the authenticated gateway. Docker Compose builds it and runs it alongside the pinned Gotenberg image.
+## Supported inputs
 
-1. Copy `.env.example` to `.env` on the server.
-2. Generate `GATEWAY_TOKEN` with `openssl rand -hex 32` and put it in `.env`. Compose passes only this value into the gateway; unrelated values in `.env` are not injected into either container.
-3. Build and start both services:
+The app displays this list from the backend registry used for routing.
 
-   ```sh
-   docker compose up --build -d
-   ```
+LibreOffice WASM 2.7.2:
 
-The gateway is published at `http://127.0.0.1:8080` by default. Gotenberg has no host port and is reachable only by the gateway through Compose's private network. In production, publish the gateway through an HTTPS reverse proxy or secure tunnel. Never expose Gotenberg directly to the internet.
+- Word and text: DOC, DOCX, ODT, RTF, TXT, HTML/HTM, EPUB
+- Spreadsheets: XLS, XLSX, ODS, CSV
+- Presentations: PPT, PPTX, ODP
+- Drawings/formulas: ODG, ODF
 
-Useful server commands:
+Rust-native image engine:
 
-```sh
-docker compose logs -f gateway gotenberg
-docker compose down
-```
+- PNG, JPEG/JPG, BMP, GIF, TIFF/TIF, WEBP
 
-The gateway API is intentionally small:
+PDF files use a copy/passthrough engine and are not re-rendered.
 
-```text
-GET  /health
-POST /v1/convert
-```
+This list is intentionally narrower than desktop LibreOffice's import list. A
+format is not advertised merely because another LibreOffice build may support
+it. In particular, macro-enabled Office files, templates, WPS, WordPerfect,
+Visio, Publisher, Pages, Numbers, Keynote, and SVG input are not claimed by the
+selected WASM package's declared browser API.
 
-`POST /v1/convert` requires `Authorization: Bearer <GATEWAY_TOKEN>`, accepts one multipart field named `file`, and returns a PDF. Configure upload-size and rate limits at the reverse proxy as well as the gateway's built-in 25 MiB request limit.
+## Storage and history
 
-Gotenberg 8.34.0 is pinned because it includes linked-content and outbound-request protections for untrusted Office documents. Keep the container updated when newer patched releases are available.
+The application stores its SQLite database and `converted-files` directory in
+the operating system's application-data directory. New history rows store
+metadata and the output path, not a second PDF BLOB. Schema upgrades add source
+path, detected format, engine, sizes, and completion time without recreating the
+database.
 
-## Desktop development
+Legacy `output_data` and `output_base64` columns remain readable so older output
+copies can still be restored. New conversions never populate them. If a new
+output disappears, the UI offers **Reconvert** when its original source path
+still exists; otherwise it reports the file as unavailable.
 
-Requirements: a current Rust toolchain, Node.js, npm, and the normal [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+Each job gets a dedicated application-cache work directory. The original is
+never modified. Job artifacts are removed after success, failure, or
+cancellation, and stale work directories are cleaned at startup.
+
+## Development
+
+Requirements are a current Rust toolchain, Node.js/npm, and the normal
+[Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-On first launch, open **Settings** and enter the public HTTPS gateway URL and `GATEWAY_TOKEN`. HTTP is accepted only for `localhost` development. The URL is stored in SQLite; the token is stored in the operating system credential vault (macOS Keychain, Windows Credential Manager, or Linux Secret Service). Existing installations automatically migrate and remove a legacy plaintext SQLite token after the credential-vault write succeeds.
+`npm run prepare:libreoffice` copies the package's five required browser assets
+into an ignored `public/libreoffice-wasm` directory. `predev` and `prebuild` run
+this automatically. The files are served from the application itself; no CDN or
+runtime download is used.
 
-The app creates its SQLite database and `converted-files` folder in the operating system's application-data directory. Each converted PDF is also stored as a SQLite BLOB so a missing output file can be recreated after confirmation. The BLOB uses Zstandard compression only when that makes the file smaller; otherwise its exact raw bytes are stored. On upgrade, base64 backups are migrated and existing successful conversions are backed up when their output files still exist. Removing a history entry removes both the output file and its database copy. Supported inputs include DOC, DOCX, PPT, PPTX, XLS, XLSX, ODT, ODP, ODS, RTF, and plain text; output is PDF.
+The browser build requires `SharedArrayBuffer`. Vite development responses and
+packaged Tauri responses set COOP/COEP headers, while the CSP permits local WASM
+and local workers without permitting remote network destinations.
 
-Google Docs and Google Slides are cloud resources rather than uploadable file formats. Export them from Google Drive as DOCX/PPTX and select the exported file in the app. Direct Google Drive export can be added separately later without adding a hosted conversion service.
-
-## Build an installer
+## Testing
 
 ```sh
+cargo test --workspace
+npm run build
+npm run test:libreoffice
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Rust tests cover detection, registry uniqueness, routing, safe filenames,
+metadata-only migration behavior, image conversion, PDF passthrough, failed
+history, missing-source reconversion, and legacy BLOB compatibility.
+
+`npm run test:libreoffice` is the heavier local smoke suite. It initializes the
+same bundled LibreOffice WASM binary and converts generated DOCX, PPTX, XLSX,
+ODT, RTF, and TXT fixtures to PDF. Fixtures under `tests/fixtures` were generated
+for this repository and contain no downloaded document content.
+
+## Building installers
+
+```sh
+npm install
+npm run build
+cargo test --workspace
 npm run tauri build
 ```
 
-Installers are written beneath `target/release/bundle`. Build on each target operating system or add a platform matrix to CI when Windows and Linux packages are needed.
+Installers are written below `target/release/bundle`. Tauri installers are built
+on their target operating system; produce separate macOS, Windows, and Linux
+artifacts in a platform matrix. The package includes all LibreOffice WASM
+runtime assets. End users do not need Node.js, Rust, Python, Docker, Gotenberg,
+or LibreOffice.
 
-## Verification
+The uncompressed LibreOffice runtime adds approximately 236 MiB to the app
+bundle (`soffice.wasm` is about 141 MiB and `soffice.data` about 95 MiB).
+Installer compression and platform overhead determine final download size.
 
-```sh
-npm run build
-cargo test --workspace
-```
+## Privacy and security
 
-The tests do not call Gotenberg. A live end-to-end conversion requires the container and gateway configuration above.
+- Source bytes are read from disk by an allowlisted Tauri command and sent only
+  to the local application Web Worker.
+- The conversion path contains no HTTP client, upload code, gateway URL, token,
+  analytics, telemetry, or remote fallback.
+- The worker and WASM/data files are same-origin packaged assets.
+- LibreOffice runs headlessly in a WASM sandbox; the app does not execute macros
+  or expose arbitrary shell commands.
+- The CSP does not allow arbitrary remote connections.
+- Source documents should still be treated as untrusted input. Keep the pinned
+  WASM package updated when security fixes are released.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for LibreOffice/MPL and
+image/PDF dependency licensing.
+
+## Known limitations
+
+- LibreOffice WASM has a large lazy initialization and memory footprint.
+- One LibreOffice conversion runs at a time. Native image and PDF work does not
+  depend on that queue.
+- WASM conversion receives the source as an `ArrayBuffer`; Tauri raw IPC avoids
+  JSON/base64 expansion, but the browser and converter still need memory for the
+  input and output buffers.
+- The upstream worker API offers coarse lifecycle messages, not true document
+  progress, so the UI shows an indeterminate converting state.
+- Upstream does not expose active-job abort. Cancelled results are safely
+  discarded, but CPU/memory may remain occupied until the current call returns.
+- The native image engine converts the primary image/frame to one PDF page.
+- Font substitution can change layout when a document's fonts are absent from
+  the WASM bundle. CJK font bundles are intentionally not included because of
+  their roughly 250 MiB additional size.
+- Browser-worker compatibility must be verified on each supported OS WebView as
+  part of release testing.

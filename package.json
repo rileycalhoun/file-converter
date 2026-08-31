@@ -9,6 +9,7 @@
     "dev": "vite --port 1420",
     "prebuild": "npm run prepare:libreoffice",
     "build": "vite build",
+    "test:libreoffice": "node scripts/verify-libreoffice.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
