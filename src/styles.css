@@ -373,18 +373,6 @@ dialog::backdrop {
     font-family: monospace;
 }
 
-form#settings-form input {
-    padding: 12px 15px;
-    border: none;
-    border-radius: 8px;
-    font-size: 1em;
-}
-
-#token-state {
-    margin: 0;
-    font-size: 0.9em;
-}
-
 #missing-message {
     margin: 0;
     line-height: 1.5;
