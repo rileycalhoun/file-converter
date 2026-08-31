@@ -8,6 +8,7 @@ diesel.toml
 /dist
 /node_modules
 /public/libreoffice-wasm
+/public/THIRD_PARTY_NOTICES.md
 
 # Platform files
 .DS_Store

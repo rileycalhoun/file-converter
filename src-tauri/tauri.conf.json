@@ -31,7 +31,6 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../static/favicon.png"],
-    "resources": ["../THIRD_PARTY_NOTICES.md"]
+    "icon": ["../static/favicon.png"]
   }
 }

@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageRoot = join(root, "node_modules", "@matbee", "libreoffice-converter");
 const destination = join(root, "public", "libreoffice-wasm");
+const noticesSource = join(root, "THIRD_PARTY_NOTICES.md");
+const noticesDestination = join(root, "public", "THIRD_PARTY_NOTICES.md");
 const assets = [
   ["wasm/soffice.js", "soffice.js"],
   ["wasm/soffice.wasm", "soffice.wasm"],
@@ -29,4 +31,6 @@ for (const [relativeSource, outputName] of assets) {
   }
 }
 
-console.log(`Prepared ${assets.length} local LibreOffice WASM assets.`);
+await copyFile(noticesSource, noticesDestination);
+
+console.log(`Prepared ${assets.length} local LibreOffice WASM assets and dependency notices.`);

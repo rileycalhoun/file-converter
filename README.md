@@ -125,7 +125,9 @@ Installers are written below `target/release/bundle`. Tauri installers are built
 on their target operating system; produce separate macOS, Windows, and Linux
 artifacts in a platform matrix. The package includes all LibreOffice WASM
 runtime assets. End users do not need Node.js, Rust, Python, Docker, Gotenberg,
-or LibreOffice.
+or LibreOffice. Distribution builds should be signed and, on macOS, notarized
+with the platform credentials for the release organization; local development
+builds are intentionally unsigned.
 
 The uncompressed LibreOffice runtime adds approximately 236 MiB to the app
 bundle (`soffice.wasm` is about 141 MiB and `soffice.data` about 95 MiB).
