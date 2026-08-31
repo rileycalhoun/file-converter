@@ -5,69 +5,74 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="stylesheet" href="/src/styles.css" />
-    <title>Convert a File</title>
+    <title>File Converter</title>
   </head>
   <body>
-    <div id="header">
-      <button id="search-button" type="button">Search</button>
-      <button id="settings-button" type="button">Settings</button>
-    </div>
+    <header id="header">
+      <p class="privacy-note">Files stay on this device.</p>
+      <button id="supported-button" type="button">Supported formats</button>
+      <button id="history-button" type="button">History</button>
+    </header>
 
     <main id="content">
-      <div id="status" role="status">
-        <h3 id="status-message">Status Message</h3>
+      <div id="status" role="status" aria-live="polite">
+        <h3 id="status-message"></h3>
       </div>
       <div id="title">
         <h1 class="bebas-neue-bold">File Converter</h1>
-        <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
+        <p>Convert documents and images to PDF locally—no uploads or Internet connection.</p>
       </div>
       <form id="convert">
         <div id="file-selector">
           <button id="choose-file" type="button" class="bebas-neue-regular">Choose File</button>
-          <span id="selected-file">No file selected</span>
+          <div class="selected-details">
+            <strong id="selected-file">No file selected</strong>
+            <span id="detected-format">Choose a supported document or image.</span>
+          </div>
         </div>
         <div id="type-selector">
+          <label for="output-format">Output</label>
           <select id="output-format" class="bebas-neue-regular" required>
             <option value="pdf">PDF</option>
           </select>
         </div>
-        <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
+        <div class="conversion-actions">
+          <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
+          <button id="cancel-conversion" type="button" class="secondary hidden">Cancel</button>
+        </div>
       </form>
     </main>
 
     <main id="history-view" class="hidden">
       <form id="search-form">
         <button id="back-button" type="button">Back</button>
-        <input id="search-input" type="text" placeholder="file_name.pdf" />
+        <input id="search-input" type="text" placeholder="Search conversion history" />
         <button id="refresh-button" type="button" class="bebas-neue-regular">Refresh</button>
       </form>
       <div id="history"></div>
     </main>
 
-    <dialog id="settings-dialog">
-      <form id="settings-form">
-        <h3>Connection Settings</h3>
-        <label for="gateway-url">Gateway URL</label>
-        <input id="gateway-url" type="url" placeholder="https://converter.example.com" required />
-        <label for="gateway-token">Access Token</label>
-        <input id="gateway-token" type="password" placeholder="Leave blank to keep saved token" />
-        <p id="token-state"></p>
+    <dialog id="supported-dialog">
+      <section class="dialog-panel">
+        <h3>Supported formats</h3>
+        <p>This list comes from the same local registry used to route conversions.</p>
+        <div id="supported-list"></div>
         <div class="dialog-actions">
-          <button type="button" id="cancel-settings">Cancel</button>
-          <button type="submit">Save</button>
+          <button type="button" data-close="supported-dialog">Close</button>
         </div>
-      </form>
+      </section>
     </dialog>
 
-    <dialog id="restore-dialog">
-      <form id="restore-form" method="dialog">
-        <h3>File Missing</h3>
-        <p id="restore-message"></p>
+    <dialog id="missing-dialog">
+      <section class="dialog-panel">
+        <h3>Output file missing</h3>
+        <p id="missing-message"></p>
         <div class="dialog-actions">
-          <button type="submit" value="cancel">Not Now</button>
-          <button type="submit" value="restore">Recreate File</button>
+          <button type="button" data-close="missing-dialog">Not now</button>
+          <button type="button" id="restore-button" class="hidden">Restore legacy copy</button>
+          <button type="button" id="reconvert-button" class="hidden">Reconvert</button>
         </div>
-      </form>
+      </section>
     </dialog>
 
     <script type="module" src="/src/main.js"></script>

@@ -13,20 +13,20 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 anyhow = "1"
+async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
-keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service"] }
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+printpdf = { version = "0.12.7", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-tokio = { version = "1", features = ["fs"] }
-url = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zstd = "0.13"
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3"

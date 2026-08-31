@@ -7,6 +7,7 @@ diesel.toml
 # Frontend build output
 /dist
 /node_modules
+/public/libreoffice-wasm
 
 # Platform files
 .DS_Store

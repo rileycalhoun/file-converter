@@ -4,11 +4,15 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "prepare:libreoffice": "node scripts/prepare-libreoffice-assets.mjs",
+    "predev": "npm run prepare:libreoffice",
     "dev": "vite --port 1420",
+    "prebuild": "npm run prepare:libreoffice",
     "build": "vite build",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@matbee/libreoffice-converter": "2.7.2",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0"
   },
