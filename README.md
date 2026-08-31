@@ -67,6 +67,11 @@ directory. New history rows store metadata and the output path, not a second PDF
 BLOB. Schema upgrades add source path, detected format, engine, sizes, and
 completion time without recreating the database.
 
+On macOS, the application home is `~/Library/Application Support/FileConverter`.
+Existing history is copied there once from the older identifier-based directory.
+Windows and Linux use a `FileConverter` folder under their standard application-data
+location.
+
 Legacy `output_data` and `output_base64` columns remain readable so older output
 copies can still be restored. New conversions never populate them. If a new
 output disappears, the UI offers **Reconvert** when its original source path

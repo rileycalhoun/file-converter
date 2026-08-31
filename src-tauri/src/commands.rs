@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{ipc::InvokeBody, Manager, State};
+use tauri::{ipc::InvokeBody, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
@@ -190,12 +190,7 @@ pub(crate) fn restore_conversion(
         .and_then(|source| Path::new(source).parent())
         .filter(|directory| directory.is_dir())
         .map(Path::to_path_buf)
-        .unwrap_or(
-            app.path()
-                .app_data_dir()
-                .map_err(error_message)?
-                .join("legacy-restored-files"),
-        );
+        .unwrap_or_else(|| state.application_home.join("legacy-restored-files"));
     let output_path = unique_output_path(&output_directory, id, &output_name);
     std::fs::create_dir_all(&output_directory)
         .map_err(|error| format!("Could not prepare the output folder: {error}"))?;

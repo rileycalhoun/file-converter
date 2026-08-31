@@ -57,6 +57,32 @@ const CONVERSION_COLUMNS: &str = "id, source_name, source_path, detected_format,
     created_at, completed_at";
 
 impl Database {
+    pub fn migrate_if_missing(source: &Path, destination: &Path) -> Result<bool> {
+        if destination.exists() || !source.is_file() {
+            return Ok(false);
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("could not create application home at {}", parent.display())
+            })?;
+        }
+        let connection = Connection::open(source)
+            .with_context(|| format!("could not open legacy database at {}", source.display()))?;
+        if let Err(error) =
+            connection.execute("VACUUM INTO ?1", [destination.to_string_lossy().as_ref()])
+        {
+            let _ = std::fs::remove_file(destination);
+            return Err(error).with_context(|| {
+                format!(
+                    "could not migrate database from {} to {}",
+                    source.display(),
+                    destination.display()
+                )
+            });
+        }
+        Ok(true)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
             .with_context(|| format!("could not open local database at {}", path.display()))?;
@@ -378,6 +404,43 @@ mod tests {
     use super::{Database, NewConversion};
     use rusqlite::Connection;
     use uuid::Uuid;
+
+    #[test]
+    fn migrates_existing_database_to_new_application_home() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy_path = directory.path().join("legacy/file-converter.sqlite3");
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        let database = Database::open(&legacy_path).unwrap();
+        let source = directory.path().join("letter.docx");
+        std::fs::write(&source, b"PK fixture").unwrap();
+        let id = Uuid::new_v4();
+        database
+            .insert_conversion(NewConversion {
+                id,
+                source_name: "letter.docx",
+                source_path: &source,
+                detected_format: "docx",
+                output_format: "pdf",
+                engine: "libreoffice-wasm",
+                source_size: 10,
+            })
+            .unwrap();
+        drop(database);
+
+        let new_path = directory
+            .path()
+            .join("FileConverter/file-converter.sqlite3");
+        assert!(Database::migrate_if_missing(&legacy_path, &new_path).unwrap());
+        assert_eq!(
+            Database::open(&new_path)
+                .unwrap()
+                .get_conversion(id)
+                .unwrap()
+                .source_name,
+            "letter.docx"
+        );
+        assert!(!Database::migrate_if_missing(&legacy_path, &new_path).unwrap());
+    }
 
     #[test]
     fn migrates_legacy_schema_without_destroying_blob_data() {

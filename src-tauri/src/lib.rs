@@ -2,7 +2,7 @@ mod commands;
 mod conversion;
 mod database;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use conversion::ConversionService;
 use database::Database;
@@ -10,6 +10,27 @@ use tauri::Manager;
 
 struct AppState {
     service: ConversionService,
+    application_home: PathBuf,
+}
+
+fn application_home(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(app
+            .path()
+            .home_dir()
+            .map_err(anyhow::Error::msg)?
+            .join("Library/Application Support/FileConverter"))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let identifier_directory = app.path().app_data_dir().map_err(anyhow::Error::msg)?;
+        let data_root = identifier_directory.parent().ok_or_else(|| {
+            anyhow::anyhow!("the operating system application-data path has no parent")
+        })?;
+        Ok(data_root.join("FileConverter"))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -18,17 +39,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_data = app.path().app_data_dir().map_err(anyhow::Error::msg)?;
-            let work_root = app
-                .path()
-                .app_cache_dir()
-                .map_err(anyhow::Error::msg)?
-                .join("conversion-work");
-            let database = Arc::new(Database::open(&app_data.join("file-converter.sqlite3"))?);
+            let legacy_home = app.path().app_data_dir().map_err(anyhow::Error::msg)?;
+            let application_home = application_home(app.handle())?;
+            std::fs::create_dir_all(&application_home)?;
+            let database_path = application_home.join("file-converter.sqlite3");
+            Database::migrate_if_missing(
+                &legacy_home.join("file-converter.sqlite3"),
+                &database_path,
+            )?;
+            let work_root = application_home.join("cache/conversion-work");
+            let database = Arc::new(Database::open(&database_path)?);
             database.fail_interrupted_conversions()?;
             let service = ConversionService::new(database, work_root);
             service.cleanup_stale_workdirs()?;
-            app.manage(AppState { service });
+            app.manage(AppState {
+                service,
+                application_home,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
