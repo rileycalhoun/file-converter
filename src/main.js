@@ -13,10 +13,10 @@ const state = {
 };
 
 const elements = Object.fromEntries([
-  "content", "history-view", "history-button", "supported-button", "back-button", "search-input",
-  "choose-file", "selected-file", "detected-format", "convert", "convert-button",
-  "cancel-conversion", "history", "status", "status-message", "refresh-button",
-  "supported-dialog", "supported-list", "missing-dialog", "missing-message", "restore-button",
+  "content", "history-view", "search-button", "settings-button", "back-button", "search-input",
+  "choose-file", "selected-file", "convert", "convert-button", "history", "status",
+  "status-message", "refresh-button", "settings-dialog", "supported-list", "restore-dialog",
+  "restore-message", "restore-button",
   "reconvert-button",
 ].map((id) => [camelize(id), document.querySelector(`#${id}`)]));
 
@@ -62,15 +62,18 @@ const wasmRunner = new LibreOfficeWasmRunner();
 elements.chooseFile.addEventListener("click", chooseFile);
 elements.convert.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.activeConversionId) {
+    await requestCancellation();
+    return;
+  }
   if (!state.selectedPath) return;
   await beginConversion(() => invoke("start_conversion", { inputPath: state.selectedPath }));
 });
-elements.cancelConversion.addEventListener("click", requestCancellation);
-elements.historyButton.addEventListener("click", () => showView("history"));
+elements.searchButton.addEventListener("click", () => showView("history"));
 elements.backButton.addEventListener("click", () => showView("convert"));
 elements.searchInput.addEventListener("input", renderHistory);
 elements.refreshButton.addEventListener("click", loadHistory);
-elements.supportedButton.addEventListener("click", () => elements.supportedDialog.showModal());
+elements.settingsButton.addEventListener("click", () => elements.settingsDialog.showModal());
 elements.history.addEventListener("click", handleHistoryAction);
 elements.restoreButton.addEventListener("click", restoreMissingOutput);
 elements.reconvertButton.addEventListener("click", reconvertMissingOutput);
@@ -91,18 +94,20 @@ async function chooseFile() {
     state.selectedPath = selected;
     state.detected = null;
     elements.selectedFile.textContent = fileName(selected);
-    elements.detectedFormat.textContent = "Inspecting file…";
+    elements.selectedFile.removeAttribute("title");
     elements.convertButton.disabled = true;
+    showStatus("Inspecting file…", "working");
     const detected = await invoke("inspect_source", { inputPath: selected });
     state.detected = detected;
-    elements.detectedFormat.textContent = `${detected.format.toUpperCase()} · ${formatBytes(detected.sourceSize)} · ${engineLabel(detected.engine)}`;
+    elements.selectedFile.textContent = `${fileName(selected)} · ${detected.format.toUpperCase()}`;
+    elements.selectedFile.title = `${formatBytes(detected.sourceSize)} · ${engineLabel(detected.engine)}`;
     elements.convertButton.disabled = false;
     hideStatus();
   } catch (error) {
     state.selectedPath = null;
     state.detected = null;
     elements.selectedFile.textContent = "Unsupported file";
-    elements.detectedFormat.textContent = String(error);
+    elements.selectedFile.removeAttribute("title");
     showStatus(String(error), "error");
   }
 }
@@ -149,7 +154,7 @@ async function beginConversion(createStart) {
 async function requestCancellation() {
   if (!state.activeConversionId || state.cancellationRequested) return;
   state.cancellationRequested = true;
-  elements.cancelConversion.disabled = true;
+  elements.convertButton.disabled = true;
   showStatus("Cancellation requested. The current WASM operation will be discarded safely when it stops.", "working");
   try {
     const conversion = await invoke("cancel_conversion", { id: state.activeConversionId });
@@ -166,7 +171,7 @@ function finishUiConversion(conversion) {
     state.selectedPath = null;
     state.detected = null;
     elements.selectedFile.textContent = "No file selected";
-    elements.detectedFormat.textContent = "Choose a supported document or image.";
+    elements.selectedFile.removeAttribute("title");
     openCompletedConversion(conversion).catch((error) => {
       showStatus(`The PDF was saved, but it could not be opened: ${String(error)}`, "error");
     });
@@ -202,20 +207,20 @@ async function openCompletedConversion(conversion) {
   const result = await invoke("open_conversion", { id: conversion.id });
   if (!result.missing) return;
   state.missingConversion = conversion;
-  elements.missingMessage.textContent = result.restorable
+  elements.restoreMessage.textContent = result.restorable
     ? `${conversion.sourceName}'s output is missing. This legacy history entry has a stored database copy.`
     : result.reconvertible
       ? `${conversion.sourceName}'s output is missing. The original still exists and can be converted again.`
       : `${conversion.sourceName}'s output is missing, and neither a legacy backup nor the original source is available.`;
   elements.restoreButton.classList.toggle("hidden", !result.restorable);
   elements.reconvertButton.classList.toggle("hidden", !result.reconvertible);
-  elements.missingDialog.showModal();
+  elements.restoreDialog.showModal();
 }
 
 async function restoreMissingOutput() {
   const conversion = state.missingConversion;
   if (!conversion) return;
-  elements.missingDialog.close();
+  elements.restoreDialog.close();
   await invoke("restore_conversion", { id: conversion.id });
   showStatus(`${conversion.sourceName} was restored from its legacy database copy.`, "success");
 }
@@ -223,7 +228,7 @@ async function restoreMissingOutput() {
 async function reconvertMissingOutput() {
   const conversion = state.missingConversion;
   if (!conversion) return;
-  elements.missingDialog.close();
+  elements.restoreDialog.close();
   showView("convert");
   await beginConversion(() => invoke("reconvert", { id: conversion.id }));
 }
@@ -258,24 +263,19 @@ function renderHistory() {
   const conversions = state.conversions.filter((conversion) =>
     conversion.sourceName.toLowerCase().includes(search));
   if (conversions.length === 0) {
-    elements.history.innerHTML = `<div id="no-files"><h3>${search ? "No matching conversions." : "No conversions yet."}</h3></div>`;
+    const message = search
+      ? `There were no files found containing '${escapeHtml(search)}'!`
+      : "There were no files found!";
+    elements.history.innerHTML = `<div id="no-files"><h3>${message}</h3></div>`;
     return;
   }
   elements.history.innerHTML = `<ul id="files">${conversions.map((conversion) => {
     const canOpen = conversion.status === "finished";
-    const detail = [
-      conversion.detectedFormat?.toUpperCase(),
-      conversion.engine ? engineLabel(conversion.engine) : null,
-      conversion.outputSize ? formatBytes(conversion.outputSize) : null,
-    ].filter(Boolean).join(" · ");
     return `<li>
-      <div class="history-file">
-        <strong>${escapeHtml(conversion.sourceName)} → PDF</strong>
-        <small>${escapeHtml(detail || conversion.error || "Legacy history entry")}</small>
-      </div>
-      <span class="status-label status-${escapeHtml(conversion.status)}">${escapeHtml(conversion.status)}</span>
-      ${canOpen ? `<button data-action="open" data-id="${conversion.id}">Open</button>` : ""}
-      ${conversion.sourcePath ? `<button data-action="reconvert" data-id="${conversion.id}" ${state.activeConversionId ? "disabled" : ""}>Reconvert</button>` : ""}
+      <button class="file-link" ${canOpen ? `data-action="open" data-id="${conversion.id}"` : "disabled"}>
+        ${escapeHtml(conversion.sourceName)} → ${escapeHtml(conversion.outputFormat.toUpperCase())}
+      </button>
+      <span class="status-label">${escapeHtml(conversion.status)}</span>
       <button class="remove-button" data-action="delete" data-id="${conversion.id}">Remove</button>
     </li>`;
   }).join("")}</ul>`;
@@ -288,10 +288,13 @@ function upsertConversion(conversion) {
 
 function setBusy(busy) {
   elements.chooseFile.disabled = busy;
-  elements.convertButton.disabled = busy || !state.selectedPath || !state.detected;
-  elements.convertButton.textContent = busy ? "Converting…" : "Convert";
-  elements.cancelConversion.classList.toggle("hidden", !busy || !state.activeConversionId);
-  elements.cancelConversion.disabled = state.cancellationRequested;
+  if (busy && state.activeConversionId) {
+    elements.convertButton.disabled = state.cancellationRequested;
+    elements.convertButton.textContent = state.cancellationRequested ? "Cancelling…" : "Cancel";
+  } else {
+    elements.convertButton.disabled = busy || !state.selectedPath || !state.detected;
+    elements.convertButton.textContent = busy ? "Converting…" : "Convert";
+  }
 }
 
 function showView(view) {

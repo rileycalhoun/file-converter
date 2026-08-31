@@ -5,74 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="stylesheet" href="/src/styles.css" />
-    <title>File Converter</title>
+    <title>Convert a File</title>
   </head>
   <body>
-    <header id="header">
-      <p class="privacy-note">Files stay on this device.</p>
-      <button id="supported-button" type="button">Supported formats</button>
-      <button id="history-button" type="button">History</button>
-    </header>
+    <div id="header">
+      <button id="search-button" type="button">Search</button>
+      <button id="settings-button" type="button">Settings</button>
+    </div>
 
     <main id="content">
-      <div id="status" role="status" aria-live="polite">
-        <h3 id="status-message"></h3>
+      <div id="status" role="status">
+        <h3 id="status-message">Status Message</h3>
       </div>
       <div id="title">
         <h1 class="bebas-neue-bold">File Converter</h1>
-        <p>Convert documents and images to PDF locally—no uploads or Internet connection.</p>
+        <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
       </div>
       <form id="convert">
         <div id="file-selector">
           <button id="choose-file" type="button" class="bebas-neue-regular">Choose File</button>
-          <div class="selected-details">
-            <strong id="selected-file">No file selected</strong>
-            <span id="detected-format">Choose a supported document or image.</span>
-          </div>
+          <span id="selected-file">No file selected</span>
         </div>
         <div id="type-selector">
-          <label for="output-format">Output</label>
           <select id="output-format" class="bebas-neue-regular" required>
             <option value="pdf">PDF</option>
           </select>
         </div>
-        <div class="conversion-actions">
-          <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
-          <button id="cancel-conversion" type="button" class="secondary hidden">Cancel</button>
-        </div>
+        <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
       </form>
     </main>
 
     <main id="history-view" class="hidden">
       <form id="search-form">
         <button id="back-button" type="button">Back</button>
-        <input id="search-input" type="text" placeholder="Search conversion history" />
+        <input id="search-input" type="text" placeholder="file_name.pdf" />
         <button id="refresh-button" type="button" class="bebas-neue-regular">Refresh</button>
       </form>
       <div id="history"></div>
     </main>
 
-    <dialog id="supported-dialog">
-      <section class="dialog-panel">
+    <dialog id="settings-dialog">
+      <form id="settings-form">
         <h3>Supported formats</h3>
-        <p>This list comes from the same local registry used to route conversions.</p>
+        <p>Files are converted locally on this device.</p>
         <div id="supported-list"></div>
         <div class="dialog-actions">
-          <button type="button" data-close="supported-dialog">Close</button>
+          <button type="button" data-close="settings-dialog">Close</button>
         </div>
-      </section>
+      </form>
     </dialog>
 
-    <dialog id="missing-dialog">
-      <section class="dialog-panel">
-        <h3>Output file missing</h3>
-        <p id="missing-message"></p>
+    <dialog id="restore-dialog">
+      <form id="restore-form">
+        <h3>File Missing</h3>
+        <p id="restore-message"></p>
         <div class="dialog-actions">
-          <button type="button" data-close="missing-dialog">Not now</button>
+          <button type="button" data-close="restore-dialog">Not Now</button>
           <button type="button" id="restore-button" class="hidden">Restore legacy copy</button>
           <button type="button" id="reconvert-button" class="hidden">Reconvert</button>
         </div>
-      </section>
+      </form>
     </dialog>
 
     <script type="module" src="/src/main.js"></script>
