@@ -9,6 +9,7 @@
   </head>
   <body>
     <div id="header">
+      <button id="history-button" type="button">History</button>
       <button id="settings-button" type="button">Settings</button>
     </div>
 
@@ -46,6 +47,17 @@
           <button type="button" data-close="settings-dialog">Close</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="history-dialog">
+      <section id="history-panel">
+        <h3>Conversion history</h3>
+        <p id="history-summary">Your recent local conversions.</p>
+        <div id="history-list" aria-live="polite"></div>
+        <div class="dialog-actions">
+          <button type="button" data-close="history-dialog">Close</button>
+        </div>
+      </section>
     </dialog>
 
     <script type="module" src="/src/main.js"></script>

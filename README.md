@@ -74,8 +74,10 @@ location.
 
 Legacy `output_data` and `output_base64` columns remain readable so older output
 copies can still be restored. New conversions never populate them. If a new
-output disappears, the UI offers **Reconvert** when its original source path
-still exists; otherwise it reports the file as unavailable.
+output disappears, the **History** dialog offers **Reconvert** when its original
+source path still exists. Legacy entries with stored PDF data can be restored;
+otherwise the dialog reports that the output is unavailable. Existing PDFs can
+also be opened and history entries can be deleted from the same dialog.
 
 Each job gets a dedicated application-cache work directory. The original is
 never modified. Job artifacts are removed after success, failure, or
