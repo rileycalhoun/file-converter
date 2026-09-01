@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/wedding-ring-icon.png" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Convert a File</title>
+  </head>
+  <body>
+    <div id="header">
+      <button id="settings-button" type="button">Settings</button>
+    </div>
+
+    <main id="content">
+      <div id="title">
+        <h1 class="bebas-neue-bold">File Converter</h1>
+        <h1 class="bebas-neue-bold">for Mrs. Calhoun</h1>
+        <p>Turn documents and images into PDFs in just a few clicks.</p>
+      </div>
+      <div id="status" role="status" aria-live="polite">
+        <p id="status-message"></p>
+      </div>
+      <form id="convert">
+        <div id="file-selector">
+          <button id="choose-file" type="button" class="bebas-neue-regular">Choose File</button>
+          <span id="selected-file">No file selected</span>
+        </div>
+        <div id="type-selector">
+          <span>Convert to</span>
+          <select id="output-format" class="bebas-neue-regular" required>
+            <option value="pdf">PDF</option>
+          </select>
+        </div>
+        <button id="convert-button" type="submit" class="bebas-neue-regular" disabled>Convert</button>
+      </form>
+      <p id="privacy-note">Your files stay private and never leave this device.</p>
+    </main>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <h3>Supported formats</h3>
+        <p>Files are converted locally on this device.</p>
+        <div id="supported-list"></div>
+        <div class="dialog-actions">
+          <button type="button" data-close="settings-dialog">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

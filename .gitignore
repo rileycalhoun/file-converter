@@ -3,3 +3,12 @@ diesel.toml
 
 # Rust defaults
 /target
+
+# Frontend build output
+/dist
+/node_modules
+/public/libreoffice-wasm
+/public/THIRD_PARTY_NOTICES.md
+
+# Platform files
+.DS_Store
