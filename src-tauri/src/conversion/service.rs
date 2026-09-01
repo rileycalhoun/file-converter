@@ -351,6 +351,25 @@ impl ConversionService {
             .map_err(|error| ConversionError::Persistence(error.to_string()))
     }
 
+    pub fn delete_history(&self, id: Uuid) -> Result<Option<String>, ConversionError> {
+        if self
+            .pending_wasm
+            .lock()
+            .map_err(|_| {
+                ConversionError::ConversionFailed("conversion queue lock was poisoned".into())
+            })?
+            .contains_key(&id)
+        {
+            return Err(ConversionError::ConversionFailed(
+                "Active conversions cannot be deleted. Cancel or finish the conversion first."
+                    .into(),
+            ));
+        }
+        self.database
+            .delete_conversion(id)
+            .map_err(|error| ConversionError::Persistence(error.to_string()))
+    }
+
     fn take_pending(&self, id: Uuid) -> Result<ConversionRequest, ConversionError> {
         self.pending_wasm
             .lock()
@@ -512,6 +531,33 @@ mod tests {
         assert_eq!(cancelled.status, "cancelled");
         assert!(service
             .complete_wasm(task.conversion_id, b"%PDF-1.7\nstale")
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn active_wasm_conversion_cannot_be_deleted() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(database, directory.path().join("work"));
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"local fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+
+        assert!(service.delete_history(task.conversion_id).is_err());
+        assert_eq!(
+            service
+                .database()
+                .get_conversion(task.conversion_id)
+                .unwrap()
+                .status,
+            "processing"
+        );
+
+        service.cancel(task.conversion_id).unwrap();
+        assert!(service.delete_history(task.conversion_id).is_ok());
+        assert!(service
+            .database()
+            .get_conversion(task.conversion_id)
             .is_err());
     }
 

@@ -1,18 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WorkerBrowserConverter, createWasmPaths } from "@matbee/libreoffice-converter/browser";
+import { ConversionGuard } from "./conversion-guard.js";
 
 const state = {
   selectedPath: null,
   detected: null,
   supportedFormats: [],
+  conversions: [],
   activeConversionId: null,
   cancellationRequested: false,
 };
 
 const elements = Object.fromEntries([
-  "settings-button", "choose-file", "selected-file", "convert", "convert-button", "status",
-  "status-message", "settings-dialog", "supported-list",
+  "history-button", "settings-button", "choose-file", "selected-file", "convert", "convert-button",
+  "status", "status-message", "history-dialog", "history-summary", "history-list", "settings-dialog",
+  "supported-list",
 ].map((id) => [camelize(id), document.querySelector(`#${id}`)]));
 
 class LibreOfficeWasmRunner {
@@ -53,6 +56,7 @@ class LibreOfficeWasmRunner {
 }
 
 const wasmRunner = new LibreOfficeWasmRunner();
+const conversionGuard = new ConversionGuard();
 
 elements.chooseFile.addEventListener("click", chooseFile);
 elements.convert.addEventListener("submit", async (event) => {
@@ -65,6 +69,11 @@ elements.convert.addEventListener("submit", async (event) => {
   await beginConversion(() => invoke("start_conversion", { inputPath: state.selectedPath }));
 });
 elements.settingsButton.addEventListener("click", () => elements.settingsDialog.showModal());
+elements.historyButton.addEventListener("click", async () => {
+  await loadHistory();
+  elements.historyDialog.showModal();
+});
+elements.historyList.addEventListener("click", handleHistoryAction);
 
 document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
@@ -101,6 +110,11 @@ async function chooseFile() {
 }
 
 async function beginConversion(createStart) {
+  const token = conversionGuard.begin();
+  if (!token) {
+    showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
+    return;
+  }
   setBusy(true);
   state.cancellationRequested = false;
   showStatus("Preparing local conversion…", "working");
@@ -131,9 +145,12 @@ async function beginConversion(createStart) {
   } catch (error) {
     if (!state.cancellationRequested) showStatus(String(error), "error");
   } finally {
-    state.activeConversionId = null;
-    state.cancellationRequested = false;
-    setBusy(false);
+    if (conversionGuard.finish(token)) {
+      state.activeConversionId = null;
+      state.cancellationRequested = false;
+      setBusy(false);
+    }
+    await loadHistory();
   }
 }
 
@@ -187,8 +204,142 @@ async function loadSupportedFormats() {
   `).join("");
 }
 
+async function loadHistory() {
+  elements.historyList.setAttribute("aria-busy", "true");
+  try {
+    state.conversions = await invoke("list_conversions");
+    renderHistory();
+  } catch (error) {
+    elements.historySummary.textContent = "History is temporarily unavailable.";
+    elements.historyList.innerHTML = `<p class="history-empty">${escapeHtml(String(error))}</p>`;
+  } finally {
+    elements.historyList.removeAttribute("aria-busy");
+  }
+}
+
+function renderHistory() {
+  const count = state.conversions.length;
+  elements.historySummary.textContent = count === 0
+    ? "Completed conversions will appear here."
+    : `${count} saved ${count === 1 ? "conversion" : "conversions"}, newest first.`;
+  elements.historyButton.title = count === 0 ? "No saved conversions" : `${count} saved conversions`;
+  if (count === 0) {
+    elements.historyList.innerHTML = `
+      <div class="history-empty">
+        <strong>No conversions yet</strong>
+        <span>Choose a file to create your first local PDF.</span>
+      </div>
+    `;
+    return;
+  }
+  elements.historyList.innerHTML = state.conversions.map(historyEntryHtml).join("");
+}
+
+function historyEntryHtml(conversion) {
+  const finished = conversion.status === "finished";
+  const terminal = ["finished", "failed", "cancelled"].includes(conversion.status);
+  const missingMessage = finished && conversion.missing
+    ? conversion.restorable || conversion.reconvertible
+      ? "The saved PDF is missing. Choose an available recovery option."
+      : "The saved PDF is missing, and the original source is unavailable."
+    : "";
+  const detail = conversion.error && !finished
+    ? conversion.error
+    : conversion.outputPath || conversion.sourcePath || "No file path is available.";
+  const actions = [];
+  if (finished && !conversion.missing) {
+    actions.push(historyButtonHtml("open", conversion.id, "Open PDF", "primary"));
+  }
+  if (conversion.missing && conversion.restorable) {
+    actions.push(historyButtonHtml("restore", conversion.id, "Restore saved copy", "primary"));
+  }
+  if (conversion.missing && conversion.reconvertible) {
+    actions.push(historyButtonHtml("reconvert", conversion.id, "Reconvert", "primary", conversionGuard.isActive));
+  }
+  if (terminal) {
+    actions.push(historyButtonHtml("delete", conversion.id, "Delete", "danger"));
+  }
+  return `
+    <article class="history-entry" data-status="${escapeHtml(conversion.status)}">
+      <header>
+        <div>
+          <h4 title="${escapeHtml(conversion.sourceName)}">${escapeHtml(conversion.sourceName)}</h4>
+          <p>${escapeHtml(formatHistoryMeta(conversion))}</p>
+        </div>
+        <span class="history-status">${escapeHtml(titleCase(conversion.status))}</span>
+      </header>
+      ${missingMessage ? `<p class="history-warning">${escapeHtml(missingMessage)}</p>` : ""}
+      <p class="history-detail" title="${escapeHtml(detail)}">${escapeHtml(detail)}</p>
+      <div class="history-actions">${actions.join("")}</div>
+    </article>
+  `;
+}
+
+function historyButtonHtml(action, id, label, kind, disabled = false) {
+  return `<button type="button" class="history-action ${kind}" data-history-action="${action}" data-conversion-id="${id}"${disabled ? " disabled" : ""}>${label}</button>`;
+}
+
+async function handleHistoryAction(event) {
+  const button = event.target.closest("[data-history-action]");
+  if (!button) return;
+  const conversion = state.conversions.find((entry) => entry.id === button.dataset.conversionId);
+  if (!conversion) return;
+  const action = button.dataset.historyAction;
+  if (action === "reconvert" && conversionGuard.isActive) {
+    showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
+    return;
+  }
+  if (action === "delete" && !confirm(`Delete the history entry for ${conversion.sourceName}? Its converted PDF will also be deleted if it still exists.`)) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    if (action === "open") {
+      const availability = await invoke("open_conversion", { id: conversion.id });
+      Object.assign(conversion, availability);
+      if (availability.missing) {
+        renderHistory();
+        showStatus("The converted PDF is missing. Choose an available recovery option in History.", "error");
+      }
+    } else if (action === "restore") {
+      await invoke("restore_conversion", { id: conversion.id });
+      showStatus(`${conversion.sourceName} was restored from its legacy saved copy.`, "success");
+      await loadHistory();
+    } else if (action === "reconvert") {
+      elements.historyDialog.close();
+      await beginConversion(() => invoke("reconvert", { id: conversion.id }));
+    } else if (action === "delete") {
+      await invoke("delete_conversion", { id: conversion.id });
+      showStatus(`Removed ${conversion.sourceName} from conversion history.`, "success");
+      await loadHistory();
+    }
+  } catch (error) {
+    showStatus(String(error), "error");
+    await loadHistory();
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
+function formatHistoryMeta(conversion) {
+  const format = conversion.detectedFormat ? conversion.detectedFormat.toUpperCase() : "Unknown";
+  return `${format} → PDF · ${formatDate(conversion.createdAt)}`;
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
 function setBusy(busy) {
   elements.chooseFile.disabled = busy;
+  elements.historyList.querySelectorAll('[data-history-action="reconvert"]').forEach((button) => {
+    button.disabled = busy;
+  });
   if (busy && state.activeConversionId) {
     elements.convertButton.disabled = state.cancellationRequested;
     elements.convertButton.textContent = state.cancellationRequested ? "Cancelling…" : "Cancel";
@@ -251,4 +402,4 @@ function escapeHtml(value) {
   })[character]);
 }
 
-await loadSupportedFormats();
+await Promise.all([loadSupportedFormats(), loadHistory()]);

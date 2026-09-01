@@ -286,15 +286,21 @@ impl Database {
 
     pub fn delete_conversion(&self, id: Uuid) -> Result<Option<String>> {
         let connection = self.lock()?;
-        let path: Option<Option<String>> = connection
+        let conversion: Option<(String, Option<String>)> = connection
             .query_row(
-                "SELECT output_path FROM conversions WHERE id = ?1",
+                "SELECT status, output_path FROM conversions WHERE id = ?1",
                 [id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        let (status, path) = conversion.context("Conversion was not found.")?;
+        if !matches!(status.as_str(), "finished" | "failed" | "cancelled") {
+            anyhow::bail!(
+                "Active conversions cannot be deleted. Cancel or finish the conversion first."
+            );
+        }
         connection.execute("DELETE FROM conversions WHERE id = ?1", [id.to_string()])?;
-        Ok(path.flatten())
+        Ok(path)
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {

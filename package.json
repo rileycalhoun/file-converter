@@ -1,7 +1,7 @@
 {
   "name": "file-converter",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "dev": "vite --port 1420",
     "prebuild": "npm run prepare:libreoffice",
     "build": "vite build",
+    "test:frontend": "node --test tests/*.test.mjs",
     "test:libreoffice": "node scripts/verify-libreoffice.mjs",
     "tauri": "tauri"
   },
