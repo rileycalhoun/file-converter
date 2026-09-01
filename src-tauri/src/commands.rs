@@ -201,12 +201,7 @@ pub(crate) fn restore_conversion(
 
 #[tauri::command]
 pub(crate) fn delete_conversion(state: State<'_, AppState>, id: Uuid) -> Result<(), String> {
-    if let Some(path) = state
-        .service
-        .database()
-        .delete_conversion(id)
-        .map_err(error_message)?
-    {
+    if let Some(path) = state.service.delete_history(id).map_err(error_message)? {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

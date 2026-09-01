@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WorkerBrowserConverter, createWasmPaths } from "@matbee/libreoffice-converter/browser";
+import { ConversionGuard } from "./conversion-guard.js";
 
 const state = {
   selectedPath: null,
@@ -55,6 +56,7 @@ class LibreOfficeWasmRunner {
 }
 
 const wasmRunner = new LibreOfficeWasmRunner();
+const conversionGuard = new ConversionGuard();
 
 elements.chooseFile.addEventListener("click", chooseFile);
 elements.convert.addEventListener("submit", async (event) => {
@@ -108,6 +110,11 @@ async function chooseFile() {
 }
 
 async function beginConversion(createStart) {
+  const token = conversionGuard.begin();
+  if (!token) {
+    showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
+    return;
+  }
   setBusy(true);
   state.cancellationRequested = false;
   showStatus("Preparing local conversion…", "working");
@@ -138,9 +145,11 @@ async function beginConversion(createStart) {
   } catch (error) {
     if (!state.cancellationRequested) showStatus(String(error), "error");
   } finally {
-    state.activeConversionId = null;
-    state.cancellationRequested = false;
-    setBusy(false);
+    if (conversionGuard.finish(token)) {
+      state.activeConversionId = null;
+      state.cancellationRequested = false;
+      setBusy(false);
+    }
     await loadHistory();
   }
 }
@@ -228,6 +237,7 @@ function renderHistory() {
 
 function historyEntryHtml(conversion) {
   const finished = conversion.status === "finished";
+  const terminal = ["finished", "failed", "cancelled"].includes(conversion.status);
   const missingMessage = finished && conversion.missing
     ? conversion.restorable || conversion.reconvertible
       ? "The saved PDF is missing. Choose an available recovery option."
@@ -244,9 +254,11 @@ function historyEntryHtml(conversion) {
     actions.push(historyButtonHtml("restore", conversion.id, "Restore saved copy", "primary"));
   }
   if (conversion.missing && conversion.reconvertible) {
-    actions.push(historyButtonHtml("reconvert", conversion.id, "Reconvert", "primary"));
+    actions.push(historyButtonHtml("reconvert", conversion.id, "Reconvert", "primary", conversionGuard.isActive));
   }
-  actions.push(historyButtonHtml("delete", conversion.id, "Delete", "danger"));
+  if (terminal) {
+    actions.push(historyButtonHtml("delete", conversion.id, "Delete", "danger"));
+  }
   return `
     <article class="history-entry" data-status="${escapeHtml(conversion.status)}">
       <header>
@@ -263,8 +275,8 @@ function historyEntryHtml(conversion) {
   `;
 }
 
-function historyButtonHtml(action, id, label, kind) {
-  return `<button type="button" class="history-action ${kind}" data-history-action="${action}" data-conversion-id="${id}">${label}</button>`;
+function historyButtonHtml(action, id, label, kind, disabled = false) {
+  return `<button type="button" class="history-action ${kind}" data-history-action="${action}" data-conversion-id="${id}"${disabled ? " disabled" : ""}>${label}</button>`;
 }
 
 async function handleHistoryAction(event) {
@@ -273,6 +285,10 @@ async function handleHistoryAction(event) {
   const conversion = state.conversions.find((entry) => entry.id === button.dataset.conversionId);
   if (!conversion) return;
   const action = button.dataset.historyAction;
+  if (action === "reconvert" && conversionGuard.isActive) {
+    showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
+    return;
+  }
   if (action === "delete" && !confirm(`Delete the history entry for ${conversion.sourceName}? Its converted PDF will also be deleted if it still exists.`)) {
     return;
   }
@@ -321,6 +337,9 @@ function formatDate(value) {
 
 function setBusy(busy) {
   elements.chooseFile.disabled = busy;
+  elements.historyList.querySelectorAll('[data-history-action="reconvert"]').forEach((button) => {
+    button.disabled = busy;
+  });
   if (busy && state.activeConversionId) {
     elements.convertButton.disabled = state.cancellationRequested;
     elements.convertButton.textContent = state.cancellationRequested ? "Cancelling…" : "Cancel";
