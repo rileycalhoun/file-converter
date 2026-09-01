@@ -9,7 +9,7 @@ use crate::{
     conversion::{
         detect_format, supported_formats, unique_output_path, ConversionStart, SupportedFormat,
     },
-    database::Conversion,
+    database::{Conversion, Database},
     AppState,
 };
 
@@ -28,6 +28,15 @@ pub(crate) struct OpenConversionResult {
     missing: bool,
     restorable: bool,
     reconvertible: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HistoryEntry {
+    #[serde(flatten)]
+    conversion: Conversion,
+    #[serde(flatten)]
+    availability: OpenConversionResult,
 }
 
 #[tauri::command]
@@ -54,12 +63,14 @@ pub(crate) fn inspect_source(input_path: String) -> Result<DetectedSource, Strin
 }
 
 #[tauri::command]
-pub(crate) fn list_conversions(state: State<'_, AppState>) -> Result<Vec<Conversion>, String> {
-    state
-        .service
-        .database()
+pub(crate) fn list_conversions(state: State<'_, AppState>) -> Result<Vec<HistoryEntry>, String> {
+    let database = state.service.database();
+    database
         .list_conversions()
-        .map_err(error_message)
+        .map_err(error_message)?
+        .into_iter()
+        .map(|conversion| history_entry(database, conversion))
+        .collect()
 }
 
 #[tauri::command]
@@ -135,36 +146,18 @@ pub(crate) fn open_conversion(
         .database()
         .get_conversion(id)
         .map_err(error_message)?;
+    let availability = conversion_availability(state.service.database(), &conversion)?;
+    if availability.missing {
+        return Ok(availability);
+    }
     let path = conversion
         .output_path
         .as_deref()
         .ok_or_else(|| "This conversion does not have an output file.".to_string())?;
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => {
-            app.opener()
-                .open_path(path, None::<&str>)
-                .map_err(error_message)?;
-            Ok(OpenConversionResult {
-                missing: false,
-                restorable: false,
-                reconvertible: false,
-            })
-        }
-        Ok(_) => Err("The saved output path is not a file.".to_string()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(OpenConversionResult {
-            missing: true,
-            restorable: state
-                .service
-                .database()
-                .has_stored_file(id)
-                .map_err(error_message)?,
-            reconvertible: conversion
-                .source_path
-                .as_deref()
-                .is_some_and(|source| Path::new(source).is_file()),
-        }),
-        Err(error) => Err(format!("Could not check the converted file: {error}")),
-    }
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(error_message)?;
+    Ok(availability)
 }
 
 #[tauri::command]
@@ -237,6 +230,85 @@ fn conversion_id_header(request: &tauri::ipc::Request<'_>) -> Result<Uuid, Strin
     Uuid::parse_str(value).map_err(|_| "The conversion ID is invalid.".to_string())
 }
 
+fn history_entry(database: &Database, conversion: Conversion) -> Result<HistoryEntry, String> {
+    let availability = conversion_availability(database, &conversion)?;
+    Ok(HistoryEntry {
+        conversion,
+        availability,
+    })
+}
+
+fn conversion_availability(
+    database: &Database,
+    conversion: &Conversion,
+) -> Result<OpenConversionResult, String> {
+    let missing = conversion
+        .output_path
+        .as_deref()
+        .map(Path::new)
+        .is_none_or(|path| !path.is_file());
+    Ok(OpenConversionResult {
+        missing,
+        restorable: missing
+            && database
+                .has_stored_file(conversion.id)
+                .map_err(error_message)?,
+        reconvertible: missing
+            && conversion
+                .source_path
+                .as_deref()
+                .is_some_and(|source| Path::new(source).is_file()),
+    })
+}
+
 fn error_message(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::NewConversion;
+
+    #[test]
+    fn history_availability_tracks_missing_outputs_and_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source.docx");
+        let output_path = directory.path().join("source.pdf");
+        std::fs::write(&source_path, b"source").unwrap();
+        std::fs::write(&output_path, b"%PDF-output").unwrap();
+
+        let database = Database::open(&directory.path().join("history.sqlite3")).unwrap();
+        let id = Uuid::new_v4();
+        database
+            .insert_conversion(NewConversion {
+                id,
+                source_name: "source.docx",
+                source_path: &source_path,
+                detected_format: "docx",
+                output_format: "pdf",
+                engine: "libreoffice-wasm",
+                source_size: 6,
+            })
+            .unwrap();
+        let conversion = database
+            .mark_finished(id, &output_path, "libreoffice-wasm", 11)
+            .unwrap();
+
+        let available = conversion_availability(&database, &conversion).unwrap();
+        assert!(!available.missing);
+        assert!(!available.restorable);
+        assert!(!available.reconvertible);
+
+        std::fs::remove_file(&output_path).unwrap();
+        let missing = conversion_availability(&database, &conversion).unwrap();
+        assert!(missing.missing);
+        assert!(!missing.restorable);
+        assert!(missing.reconvertible);
+
+        std::fs::remove_file(&source_path).unwrap();
+        let unavailable = conversion_availability(&database, &conversion).unwrap();
+        assert!(unavailable.missing);
+        assert!(!unavailable.reconvertible);
+    }
 }
