@@ -107,6 +107,7 @@ and local workers without permitting remote network destinations.
 ```sh
 cargo test --workspace
 npm run build
+npm run test:frontend
 npm run test:libreoffice
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -114,6 +115,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 Rust tests cover detection, registry uniqueness, routing, safe filenames,
 metadata-only migration behavior, image conversion, PDF passthrough, failed
 history, missing-source reconversion, and legacy BLOB compatibility.
+Frontend tests cover non-reentrant conversion state so history actions cannot
+replace or clear a conversion that is already running.
 
 `npm run test:libreoffice` is the heavier local smoke suite. It initializes the
 same bundled LibreOffice WASM binary and converts generated DOCX, PPTX, XLSX,

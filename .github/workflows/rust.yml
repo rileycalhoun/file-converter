@@ -50,6 +50,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Run frontend tests
+        run: npm run test:frontend
+
       - name: Run LibreOffice WASM smoke tests
         run: npm run test:libreoffice
 
