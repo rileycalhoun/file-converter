@@ -98,8 +98,11 @@ into an ignored `public/libreoffice-wasm` directory. `predev` and `prebuild` run
 this automatically. The files are served from the application itself; no CDN or
 runtime download is used.
 
-The browser build requires `SharedArrayBuffer`. Vite development responses and
-packaged Tauri responses set COOP/COEP headers, while the CSP permits local WASM
+The browser build requires `SharedArrayBuffer`. Vite development responses set
+COOP/COEP headers. Packaged builds serve the embedded frontend on a random
+localhost port with the same isolation headers because macOS WebKit does not
+reliably expose `SharedArrayBuffer` to Tauri's custom-protocol origin. Tauri IPC
+access is scoped to that exact loopback origin, and the CSP permits local WASM
 and local workers without permitting remote network destinations.
 
 ## Testing
