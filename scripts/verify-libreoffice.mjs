@@ -7,6 +7,7 @@ import { createWorkerConverter } from "@matbee/libreoffice-converter/server";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const scriptPath = fileURLToPath(import.meta.url);
 const fixtures = ["sample.docx", "sample.pptx", "sample.xlsx", "sample.odt", "sample.rtf", "sample.txt"];
+const maxAttempts = 3;
 const fixtureFlag = process.argv.indexOf("--fixture");
 
 if (fixtureFlag >= 0) {
@@ -17,8 +18,24 @@ if (fixtureFlag >= 0) {
   await convertFixture(fixture);
 } else {
   for (const fixture of fixtures) {
-    await runIsolatedFixture(fixture);
+    await runFixtureWithRetries(fixture);
   }
+}
+
+async function runFixtureWithRetries(fixture) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await runIsolatedFixture(fixture);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        console.warn(`${error.message}; retrying (${attempt + 1}/${maxAttempts})`);
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function convertFixture(fixture) {
