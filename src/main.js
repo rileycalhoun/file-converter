@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { WorkerBrowserConverter, createWasmPaths } from "@matbee/libreoffice-converter/browser";
+import { createWasmPaths } from "@matbee/libreoffice-converter/browser";
 import { ConversionGuard } from "./conversion-guard.js";
+import { LibreOfficeWasmRunner } from "./libreoffice-wasm-runner.js";
 
 const state = {
   selectedPath: null,
@@ -9,6 +10,7 @@ const state = {
   supportedFormats: [],
   conversions: [],
   activeConversionId: null,
+  activeConversionToken: null,
   cancellationRequested: false,
 };
 
@@ -18,44 +20,7 @@ const elements = Object.fromEntries([
   "supported-list",
 ].map((id) => [camelize(id), document.querySelector(`#${id}`)]));
 
-class LibreOfficeWasmRunner {
-  converter = null;
-  initialization = null;
-
-  async initialize(onProgress) {
-    if (this.converter?.isReady()) return;
-    if (this.initialization) return this.initialization;
-    if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
-      throw new Error("The local LibreOffice runtime requires cross-origin isolation, but this app window is not isolated.");
-    }
-    this.converter = new WorkerBrowserConverter({
-      ...createWasmPaths("/libreoffice-wasm/"),
-      browserWorkerJs: "/libreoffice-wasm/browser.worker.global.js",
-      verbose: false,
-      onProgress,
-    });
-    this.initialization = this.converter.initialize().finally(() => {
-      this.initialization = null;
-    });
-    return this.initialization;
-  }
-
-  async convert(task, onProgress) {
-    await this.initialize(onProgress);
-    const input = new Uint8Array(await invoke("read_conversion_input", {
-      id: task.conversionId,
-    }));
-    const result = await this.converter.convert(input, {
-      inputFormat: task.inputFormat,
-      outputFormat: "pdf",
-    }, task.fileName);
-    return invoke("complete_wasm_conversion", result.data, {
-      headers: { "x-conversion-id": task.conversionId },
-    });
-  }
-}
-
-const wasmRunner = new LibreOfficeWasmRunner();
+const wasmRunner = new LibreOfficeWasmRunner({ invoke, wasmPaths: createWasmPaths("/libreoffice-wasm/") });
 const conversionGuard = new ConversionGuard();
 
 elements.chooseFile.addEventListener("click", chooseFile);
@@ -115,6 +80,7 @@ async function beginConversion(createStart) {
     showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
     return;
   }
+  state.activeConversionToken = token;
   setBusy(true);
   state.cancellationRequested = false;
   showStatus("Preparing local conversion…", "working");
@@ -135,7 +101,7 @@ async function beginConversion(createStart) {
         }
       });
     } catch (error) {
-      if (state.cancellationRequested) return;
+      if (error?.name === "AbortError" || state.cancellationRequested) return;
       conversion = await invoke("fail_wasm_conversion", {
         id: start.wasmTask.conversionId,
         error: safeEngineError(error),
@@ -158,11 +124,17 @@ async function requestCancellation() {
   if (!state.activeConversionId || state.cancellationRequested) return;
   state.cancellationRequested = true;
   elements.convertButton.disabled = true;
-  showStatus("Cancellation requested. The current WASM operation will be discarded safely when it stops.", "working");
+  const id = state.activeConversionId;
+  const token = state.activeConversionToken;
+  // Stop synchronously: cancelling must not wait for a blocked WASM thread.
+  wasmRunner.cancel();
+  showStatus("Conversion cancelled. No output file was saved.", "working");
   try {
-    await invoke("cancel_conversion", { id: state.activeConversionId });
+    await invoke("cancel_conversion", { id });
   } catch (error) {
-    showStatus(String(error), "error");
+    if (state.activeConversionToken === token) showStatus(String(error), "error");
+  } finally {
+    await loadHistory();
   }
 }
 
