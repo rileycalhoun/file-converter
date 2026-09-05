@@ -23,13 +23,16 @@ export class LibreOfficeWasmRunner {
 
   constructor({ invoke, wasmPaths, createWorker = () => new Worker("/libreoffice-wasm/browser.worker.global.js"),
     isIsolated = () => globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined",
-    initializationTimeoutMs = 180_000, conversionTimeoutMs = 180_000 }) {
+    initializationTimeoutMs = 180_000, conversionTimeoutMs = 180_000,
+    onTiming = () => {}, now = () => performance.now() }) {
     this.invoke = invoke;
     this.wasmPaths = wasmPaths;
     this.createWorker = createWorker;
     this.isIsolated = isIsolated;
     this.initializationTimeoutMs = initializationTimeoutMs;
     this.conversionTimeoutMs = conversionTimeoutMs;
+    this.onTiming = onTiming;
+    this.now = now;
   }
 
   async convert(task, onProgress = () => {}) {
@@ -88,19 +91,35 @@ export class LibreOfficeWasmRunner {
     this.#stop(error);
   }
 
+  dispose() {
+    const error = new Error("The local LibreOffice runtime was disposed.");
+    error.name = "AbortError";
+    this.#stop(error);
+  }
+
   #assertActive(job) {
     if (job.error) throw job.error;
     if (this.#active !== job) throw new Error("Discarded stale conversion result.");
   }
 
   async #withDeadline(operation, timeoutMs, phase, job) {
+    const started = this.now();
+    const reusedRuntime = Boolean(this.#session?.ready);
+    let outcome = "failed";
     const timer = setTimeout(() => {
       if (this.#active === job) this.#stop(new Error(`The local LibreOffice ${phase} timed out. Please try again.`));
     }, timeoutMs);
     try {
-      return await Promise.race([operation(), job.interrupted]);
+      const result = await Promise.race([operation(), job.interrupted]);
+      outcome = "completed";
+      return result;
     } finally {
       clearTimeout(timer);
+      // Timing observers must never affect conversion or expose document names.
+      try {
+        this.onTiming({ phase, durationMs: this.now() - started, reusedRuntime,
+          outcome: job.error?.name === "AbortError" ? "cancelled" : outcome });
+      } catch { /* Diagnostics are optional. */ }
     }
   }
 
