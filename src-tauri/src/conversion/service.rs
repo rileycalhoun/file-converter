@@ -13,7 +13,7 @@ use crate::database::{Conversion, Database, NewConversion};
 use super::{
     detect_format,
     engines::{ImagePdfEngine, LibreOfficeWasmEngine, PdfPassthroughEngine},
-    ConversionEngine, DetectedFormat, EngineOutput,
+    publish_output, ConversionEngine, DetectedFormat, EngineOutput,
 };
 
 #[derive(Debug, Error)]
@@ -386,29 +386,33 @@ impl ConversionService {
         result: ConversionResult,
     ) -> Result<Conversion, ConversionError> {
         let staged = request.staged_output_path();
-        if let Err(source) = std::fs::copy(&staged, &request.output_path) {
-            let error = ConversionError::OutputWriteFailed {
-                path: request.output_path.clone(),
-                source,
-            };
-            let _ = std::fs::remove_file(&request.output_path);
-            self.cleanup_request(request);
-            let _ = self.database.mark_failed(request.id, &error.to_string());
-            return Err(error);
-        }
+        let published = match std::fs::File::open(&staged)
+            .and_then(|contents| publish_output(&request.output_path, contents))
+        {
+            Ok(published) => published,
+            Err(source) => {
+                let error = ConversionError::OutputWriteFailed {
+                    path: request.output_path.clone(),
+                    source,
+                };
+                self.cleanup_request(request);
+                let _ = self.database.mark_failed(request.id, &error.to_string());
+                return Err(error);
+            }
+        };
         let conversion = match self.database.mark_finished(
             request.id,
-            &request.output_path,
+            published.path(),
             &result.engine,
             result.output_size,
         ) {
             Ok(conversion) => conversion,
             Err(error) => {
-                let _ = std::fs::remove_file(&request.output_path);
                 self.cleanup_request(request);
                 return Err(ConversionError::Persistence(error.to_string()));
             }
         };
+        published.commit();
         self.cleanup_request(request);
         Ok(conversion)
     }
@@ -451,7 +455,7 @@ pub fn pdf_file_name(value: &str) -> String {
 }
 
 pub fn unique_output_path(directory: &Path, id: Uuid, file_name: &str) -> PathBuf {
-    directory.join(format!("{}-{file_name}", &id.to_string()[..8]))
+    directory.join(format!("{id}-{file_name}"))
 }
 
 #[cfg(test)]
@@ -466,6 +470,78 @@ mod tests {
         assert_eq!(pdf_file_name("letter.docx"), "letter.pdf");
         assert_eq!(pdf_file_name("../../slides.pptx"), "slides.pdf");
         assert_eq!(pdf_file_name("bad:name.docx"), "badname.pdf");
+    }
+
+    #[test]
+    fn output_candidates_use_the_entire_conversion_id() {
+        let first = uuid::Uuid::parse_str("12345678-0000-4000-8000-000000000001").unwrap();
+        let second = uuid::Uuid::parse_str("12345678-0000-4000-8000-000000000002").unwrap();
+        assert_ne!(
+            super::unique_output_path(std::path::Path::new("/output"), first, "report.pdf"),
+            super::unique_output_path(std::path::Path::new("/output"), second, "report.pdf"),
+        );
+    }
+
+    #[tokio::test]
+    async fn wasm_completion_retries_a_name_created_while_conversion_was_running() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(database, directory.path().join("work"));
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+        let preferred = service.pending_wasm.lock().unwrap()[&task.conversion_id]
+            .output_path
+            .clone();
+        std::fs::write(&preferred, b"created by someone else").unwrap();
+
+        let finished = service
+            .complete_wasm(task.conversion_id, b"%PDF-completed")
+            .unwrap();
+        let actual = PathBuf::from(finished.output_path.unwrap());
+        assert_ne!(actual, preferred);
+        assert_eq!(std::fs::read(actual).unwrap(), b"%PDF-completed");
+        assert_eq!(
+            std::fs::read(preferred).unwrap(),
+            b"created by someone else"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_completion_persistence_rolls_back_only_its_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let db_path = directory.path().join("db.sqlite3");
+        let database = Arc::new(Database::open(&db_path).unwrap());
+        let service = ConversionService::new(database, directory.path().join("work"));
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+        let request = service.pending_wasm.lock().unwrap()[&task.conversion_id].clone();
+        std::fs::write(&request.output_path, b"existing PDF").unwrap();
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_completion BEFORE UPDATE OF output_path ON conversions
+             BEGIN SELECT RAISE(FAIL, 'injected persistence failure'); END;",
+            )
+            .unwrap();
+
+        assert!(service
+            .complete_wasm(task.conversion_id, b"%PDF-completed")
+            .is_err());
+        assert_eq!(std::fs::read(request.output_path).unwrap(), b"existing PDF");
+        assert!(!request.work_directory.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "pdf"))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use crate::{
     conversion::{
-        detect_format, supported_formats, unique_output_path, ConversionStart, SupportedFormat,
+        detect_format, publish_output, supported_formats, unique_output_path, ConversionStart,
+        SupportedFormat,
     },
     database::{Conversion, Database},
     AppState,
@@ -166,16 +167,20 @@ pub(crate) fn restore_conversion(
     state: State<'_, AppState>,
     id: Uuid,
 ) -> Result<(), String> {
-    let conversion = state
-        .service
-        .database()
-        .get_conversion(id)
-        .map_err(error_message)?;
-    let stored = state
-        .service
-        .database()
-        .stored_file(id)
-        .map_err(error_message)?;
+    let output_path =
+        restore_stored_conversion(state.service.database(), &state.application_home, id)?;
+    app.opener()
+        .open_path(output_path.to_string_lossy(), None::<&str>)
+        .map_err(error_message)
+}
+
+fn restore_stored_conversion(
+    database: &Database,
+    application_home: &Path,
+    id: Uuid,
+) -> Result<PathBuf, String> {
+    let conversion = database.get_conversion(id).map_err(error_message)?;
+    let stored = database.stored_file(id).map_err(error_message)?;
     let output_name = crate::conversion::pdf_file_name(&stored.source_name);
     let output_directory = conversion
         .source_path
@@ -183,20 +188,16 @@ pub(crate) fn restore_conversion(
         .and_then(|source| Path::new(source).parent())
         .filter(|directory| directory.is_dir())
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| state.application_home.join("legacy-restored-files"));
+        .unwrap_or_else(|| application_home.join("legacy-restored-files"));
     let output_path = unique_output_path(&output_directory, id, &output_name);
     std::fs::create_dir_all(&output_directory)
         .map_err(|error| format!("Could not prepare the output folder: {error}"))?;
-    std::fs::write(&output_path, stored.bytes)
+    let published = publish_output(&output_path, stored.bytes.as_slice())
         .map_err(|error| format!("Could not recreate the converted file: {error}"))?;
-    state
-        .service
-        .database()
-        .update_output_path(id, &output_path)
+    database
+        .update_output_path(id, published.path())
         .map_err(error_message)?;
-    app.opener()
-        .open_path(output_path.to_string_lossy(), None::<&str>)
-        .map_err(error_message)
+    Ok(published.commit())
 }
 
 #[tauri::command]
@@ -264,6 +265,105 @@ fn error_message(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::database::NewConversion;
+
+    fn stored_conversion(directory: &Path) -> (Database, Uuid, PathBuf) {
+        let db_path = directory.join("history.sqlite3");
+        let database = Database::open(&db_path).unwrap();
+        let id = Uuid::new_v4();
+        database
+            .insert_conversion(NewConversion {
+                id,
+                source_name: "source.docx",
+                source_path: &directory.join("source.docx"),
+                detected_format: "docx",
+                output_format: "pdf",
+                engine: "legacy",
+                source_size: 6,
+            })
+            .unwrap();
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE conversions SET status = 'finished', output_data = ?2 WHERE id = ?1",
+                rusqlite::params![id.to_string(), b"%PDF-restored".as_slice()],
+            )
+            .unwrap();
+        (database, id, db_path)
+    }
+
+    #[test]
+    fn repeated_restoration_preserves_existing_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, _) = stored_conversion(directory.path());
+        let preferred = unique_output_path(directory.path(), id, "source.pdf");
+        std::fs::write(&preferred, b"unrelated").unwrap();
+        let first = restore_stored_conversion(&database, directory.path(), id).unwrap();
+        let second = restore_stored_conversion(&database, directory.path(), id).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&preferred).unwrap(), b"unrelated");
+        assert_eq!(std::fs::read(&first).unwrap(), b"%PDF-restored");
+        assert_eq!(std::fs::read(&second).unwrap(), b"%PDF-restored");
+        assert_eq!(
+            database.get_conversion(id).unwrap().output_path.unwrap(),
+            second.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn concurrent_restoration_never_clobbers_another_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, _) = stored_conversion(directory.path());
+        let database = std::sync::Arc::new(database);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let database = database.clone();
+                let barrier = barrier.clone();
+                let home = directory.path().to_path_buf();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    restore_stored_conversion(&database, &home, id).unwrap()
+                })
+            })
+            .collect();
+        let paths: std::collections::HashSet<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 4);
+        for path in paths {
+            assert_eq!(std::fs::read(path).unwrap(), b"%PDF-restored");
+        }
+    }
+
+    #[test]
+    fn restore_persistence_failure_removes_only_the_new_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, db_path) = stored_conversion(directory.path());
+        let preferred = unique_output_path(directory.path(), id, "source.pdf");
+        std::fs::write(&preferred, b"unrelated").unwrap();
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_restore BEFORE UPDATE OF output_path ON conversions
+             BEGIN SELECT RAISE(FAIL, 'injected persistence failure'); END;",
+            )
+            .unwrap();
+        assert!(restore_stored_conversion(&database, directory.path(), id).is_err());
+        assert_eq!(std::fs::read(preferred).unwrap(), b"unrelated");
+        assert!(database.get_conversion(id).unwrap().output_path.is_none());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "pdf"))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn history_availability_tracks_missing_outputs_and_sources() {
