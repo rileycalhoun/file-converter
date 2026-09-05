@@ -259,3 +259,35 @@ test("a deadline after completion begins never issues a second backend transitio
   await rejected;
   assert.deepEqual(calls, ["read_conversion_input", "complete_wasm_conversion"]);
 });
+
+test("phase telemetry distinguishes cold/warm reuse without document identifiers", async () => {
+  const timings = [];
+  const { runner, workers } = setup({ onTiming: (timing) => timings.push(timing) });
+  const first = runner.convert(task);
+  await initialize(workers[0]);
+  workers[0].respond("result", pdf);
+  await first;
+  const next = runner.convert(task);
+  await tick();
+  workers[0].respond("result", pdf);
+  await next;
+  assert.deepEqual(timings.map(({ phase, reusedRuntime }) => [phase, reusedRuntime]), [
+    ["initialization", false], ["conversion", true], ["initialization", true], ["conversion", true],
+  ]);
+  assert.ok(timings.every((timing) => timing.outcome === "completed" && timing.durationMs >= 0));
+  assert.ok(timings.every((timing) => !JSON.stringify(timing).includes(task.conversionId)));
+  runner.dispose();
+  assert.equal(workers[0].terminated, true);
+});
+
+test("an optional telemetry observer cannot break conversion or cancellation", async () => {
+  const { runner, workers } = setup({ onTiming: () => { throw new Error("observer failed"); } });
+  const first = runner.convert(task);
+  await initialize(workers[0]);
+  workers[0].respond("result", pdf);
+  await first;
+  const next = runner.convert(task);
+  const rejected = assert.rejects(next, { name: "AbortError" });
+  runner.dispose();
+  await rejected;
+});
