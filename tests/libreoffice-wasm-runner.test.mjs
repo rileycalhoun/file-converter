@@ -291,3 +291,49 @@ test("an optional telemetry observer cannot break conversion or cancellation", a
   runner.dispose();
   await rejected;
 });
+
+test("opted-in IPC buffers transfer without a copy and each repeated job gets fresh bytes", async () => {
+  const sources = [];
+  const { runner, workers } = setup({ transferInputOwnership: true,
+    invoke: async (command) => {
+      if (command !== "read_conversion_input") return { status: "finished" };
+      const bytes = new Uint8Array([1, 2, 3]);
+      sources.push(bytes);
+      return bytes;
+    },
+  });
+  const first = runner.convert(task);
+  workers[0].postMessage = function (message, transfer) {
+    if (message.type === "convert") assert.equal(message.inputData.buffer, sources.at(-1).buffer);
+    this.messages.push(structuredClone(message, { transfer }));
+  };
+  await initialize(workers[0]);
+  assert.equal(sources[0].byteLength, 0);
+  assert.deepEqual(workers[0].messages.at(-1).inputData, new Uint8Array([1, 2, 3]));
+  workers[0].respond("result", pdf);
+  await first;
+  const next = runner.convert(task);
+  await tick();
+  assert.equal(sources.length, 2);
+  assert.equal(sources[1].byteLength, 0);
+  workers[0].respond("result", pdf);
+  await next;
+  assert.equal(workers.length, 1);
+});
+
+test("cancellation before an IPC read completes leaves its buffer undetached", async () => {
+  let resolveInput;
+  const source = new Uint8Array([1, 2, 3]);
+  const { runner, workers } = setup({ transferInputOwnership: true,
+    invoke: () => new Promise((resolve) => { resolveInput = resolve; }),
+  });
+  const pending = runner.convert(task);
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  await initialize(workers[0]);
+  runner.cancel();
+  await rejected;
+  resolveInput(source);
+  await tick();
+  assert.deepEqual(source, new Uint8Array([1, 2, 3]));
+  assert.equal(workers[0].messages.some(({ type }) => type === "convert"), false);
+});

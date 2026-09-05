@@ -20,7 +20,8 @@ const elements = Object.fromEntries([
   "supported-list",
 ].map((id) => [camelize(id), document.querySelector(`#${id}`)]));
 
-const wasmRunner = new LibreOfficeWasmRunner({ invoke, wasmPaths: createWasmPaths("/libreoffice-wasm/") });
+// Each read returns private IPC bytes used only by this worker request.
+const wasmRunner = new LibreOfficeWasmRunner({ invoke, wasmPaths: createWasmPaths("/libreoffice-wasm/"), transferInputOwnership: true });
 const conversionGuard = new ConversionGuard();
 
 elements.chooseFile.addEventListener("click", chooseFile);

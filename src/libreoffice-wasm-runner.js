@@ -1,3 +1,5 @@
+import { prepareWorkerInput } from "./worker-input.js";
+
 // This small adapter owns the pinned LibreOffice worker's init/convert protocol.
 // The package's browser client does not reject requests on fatal worker errors,
 // and its graceful destroy waits for a response that a stuck worker cannot send.
@@ -24,7 +26,7 @@ export class LibreOfficeWasmRunner {
   constructor({ invoke, wasmPaths, createWorker = () => new Worker("/libreoffice-wasm/browser.worker.global.js"),
     isIsolated = () => globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined",
     initializationTimeoutMs = 180_000, conversionTimeoutMs = 180_000,
-    onTiming = () => {}, now = () => performance.now() }) {
+    onTiming = () => {}, now = () => performance.now(), transferInputOwnership = false }) {
     this.invoke = invoke;
     this.wasmPaths = wasmPaths;
     this.createWorker = createWorker;
@@ -33,6 +35,7 @@ export class LibreOfficeWasmRunner {
     this.conversionTimeoutMs = conversionTimeoutMs;
     this.onTiming = onTiming;
     this.now = now;
+    this.transferInputOwnership = transferInputOwnership;
   }
 
   async convert(task, onProgress = () => {}) {
@@ -58,8 +61,9 @@ export class LibreOfficeWasmRunner {
       }, this.initializationTimeoutMs, "initialization", job);
       this.#assertActive(job);
       return this.#withDeadline(async () => {
-        const input = new Uint8Array(await this.invoke("read_conversion_input", { id: task.conversionId }));
+        const source = await this.invoke("read_conversion_input", { id: task.conversionId });
         this.#assertActive(job);
+        const input = prepareWorkerInput(source, { transferOwnership: this.transferInputOwnership });
         const data = await this.#request(this.#session, "convert", {
           inputData: input, inputExt: task.inputFormat, outputFormat: "pdf", filterOptions: "",
         }, "result", [input.buffer]);
