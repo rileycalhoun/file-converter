@@ -95,10 +95,92 @@ pub(crate) fn publish_output(
     ))
 }
 
+/// Native engines already own a complete cache file. A no-clobber hard link
+/// publishes that file without a second full copy when the filesystem supports
+/// it. Cross-volume and link-unsupported destinations use local staging instead.
+pub(crate) fn publish_staged_output(
+    preferred: &Path,
+    staged: &Path,
+) -> io::Result<PublishedOutput> {
+    publish_staged_with_link(preferred, staged, |source, destination| {
+        std::fs::hard_link(source, destination)
+    })
+}
+
+fn publish_staged_with_link(
+    preferred: &Path,
+    staged: &Path,
+    link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<PublishedOutput> {
+    let contents = std::fs::File::open(staged)?;
+    // Never publish a cache symlink itself. The copy path safely writes the
+    // opened contents into a fresh destination file.
+    if !std::fs::symlink_metadata(staged)?.file_type().is_file() {
+        return publish_output(preferred, contents);
+    }
+    contents.sync_all()?;
+    let identity = Handle::from_file(contents.try_clone()?)?;
+    match link(staged, preferred) {
+        Ok(()) => Ok(PublishedOutput {
+            path: preferred.to_path_buf(),
+            identity,
+            committed: false,
+        }),
+        // The shared publisher both retries occupied names and provides the
+        // streaming fallback for EXDEV, unsupported hard links, and other
+        // filesystem limitations. No destination gets overwritten.
+        Err(_) => publish_output(preferred, contents),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn native_staging_publishes_without_copying_on_the_same_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("staged.pdf");
+        let preferred = directory.path().join("report.pdf");
+        std::fs::write(&staged, b"%PDF-native").unwrap();
+        let published = publish_staged_output(&preferred, &staged).unwrap();
+        assert!(same_file::is_same_file(&staged, published.path()).unwrap());
+        let actual = published.commit();
+        std::fs::remove_file(staged).unwrap();
+        assert_eq!(std::fs::read(actual).unwrap(), b"%PDF-native");
+    }
+
+    #[test]
+    fn cross_volume_publication_falls_back_to_destination_local_staging() {
+        let cache = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let staged = cache.path().join("output.pdf");
+        let preferred = destination.path().join("report.pdf");
+        std::fs::write(&staged, b"%PDF-cross-volume").unwrap();
+        let published = publish_staged_with_link(&preferred, &staged, |_, _| {
+            Err(io::Error::from(io::ErrorKind::CrossesDevices))
+        })
+        .unwrap();
+        assert!(!same_file::is_same_file(&staged, published.path()).unwrap());
+        let actual = published.commit();
+        assert_eq!(std::fs::read(actual).unwrap(), b"%PDF-cross-volume");
+        assert_eq!(std::fs::read_dir(destination.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn native_staging_collision_falls_back_without_overwriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("staged.pdf");
+        let preferred = directory.path().join("report.pdf");
+        std::fs::write(&staged, b"%PDF-native").unwrap();
+        std::fs::write(&preferred, b"existing").unwrap();
+        let published = publish_staged_output(&preferred, &staged).unwrap();
+        assert_ne!(published.path(), preferred);
+        drop(published);
+        assert_eq!(std::fs::read(preferred).unwrap(), b"existing");
+        assert_eq!(std::fs::read(staged).unwrap(), b"%PDF-native");
+    }
 
     #[test]
     fn collisions_preserve_files_and_directories() {

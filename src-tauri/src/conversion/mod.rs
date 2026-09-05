@@ -1,3 +1,4 @@
+mod blocking_io;
 mod detector;
 mod engine;
 mod output;

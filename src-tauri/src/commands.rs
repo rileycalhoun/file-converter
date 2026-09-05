@@ -108,7 +108,7 @@ pub(crate) async fn read_conversion_input(
 }
 
 #[tauri::command]
-pub(crate) fn complete_wasm_conversion(
+pub(crate) async fn complete_wasm_conversion(
     request: tauri::ipc::Request<'_>,
     state: State<'_, AppState>,
 ) -> Result<Conversion, String> {
@@ -116,7 +116,11 @@ pub(crate) fn complete_wasm_conversion(
     let InvokeBody::Raw(pdf) = request.body() else {
         return Err("The converted PDF must be sent as a binary payload.".into());
     };
-    state.service.complete_wasm(id, pdf).map_err(error_message)
+    state
+        .service
+        .complete_wasm(id, pdf)
+        .await
+        .map_err(error_message)
 }
 
 #[tauri::command]
@@ -162,13 +166,19 @@ pub(crate) fn open_conversion(
 }
 
 #[tauri::command]
-pub(crate) fn restore_conversion(
+pub(crate) async fn restore_conversion(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: Uuid,
 ) -> Result<(), String> {
-    let output_path =
-        restore_stored_conversion(state.service.database(), &state.application_home, id)?;
+    let database = state.service.database_handle();
+    let application_home = state.application_home.clone();
+    let output_path = state
+        .service
+        .blocking_io()
+        .run(move || restore_stored_conversion(&database, &application_home, id))
+        .await
+        .map_err(error_message)??;
     app.opener()
         .open_path(output_path.to_string_lossy(), None::<&str>)
         .map_err(error_message)
