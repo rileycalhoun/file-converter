@@ -14,7 +14,7 @@ use super::{
     blocking_io::BlockingIo,
     detect_format,
     engines::{ImagePdfEngine, LibreOfficeWasmEngine, PdfPassthroughEngine},
-    output::{publish_staged_output, PublishedOutput},
+    output::{publish_source_output, publish_staged_output, PublishedOutput},
     publish_output, ConversionEngine, DetectedFormat, EngineOutput,
 };
 
@@ -260,23 +260,8 @@ impl ConversionService {
             .map_err(|error| ConversionError::Persistence(error.to_string()))?;
 
         match engine.convert(&request).await {
-            Ok(EngineOutput::Complete(result)) => {
-                let database = self.database.clone();
-                let conversion = self
-                    .blocking_io
-                    .run(move || {
-                        let published = publish_staged_output(
-                            &request.output_path,
-                            &request.staged_output_path(),
-                        );
-                        Self::finish_request(&database, &request, result, published)
-                    })
-                    .await??;
-                Ok(ConversionStart {
-                    conversion,
-                    wasm_task: None,
-                })
-            }
+            Ok(EngineOutput::Complete(result)) => self.finish_native(request, result, false).await,
+            Ok(EngineOutput::CopySource(result)) => self.finish_native(request, result, true).await,
             Ok(EngineOutput::RequiresBrowser(task)) => {
                 self.pending_wasm
                     .lock()
@@ -302,6 +287,35 @@ impl ConversionService {
                 })
             }
         }
+    }
+
+    async fn finish_native(
+        &self,
+        request: ConversionRequest,
+        mut result: ConversionResult,
+        copy_source: bool,
+    ) -> Result<ConversionStart, ConversionError> {
+        let database = self.database.clone();
+        let conversion = self
+            .blocking_io
+            .run(move || {
+                let published = if copy_source {
+                    // Never hard-link the user's original: subsequent edits to a
+                    // source or a converted PDF must not modify the other file.
+                    publish_source_output(&request.output_path, &request.source_path)
+                } else {
+                    publish_staged_output(&request.output_path, &request.staged_output_path())
+                };
+                if let Ok(output) = &published {
+                    result.output_size = output.size();
+                }
+                Self::finish_request(&database, &request, result, published)
+            })
+            .await??;
+        Ok(ConversionStart {
+            conversion,
+            wasm_task: None,
+        })
     }
 
     pub async fn reconvert(&self, id: Uuid) -> Result<ConversionStart, ConversionError> {
@@ -638,7 +652,13 @@ mod tests {
         );
         let output_path = PathBuf::from(started.conversion.output_path.unwrap());
         assert_eq!(output_path.parent(), source.parent());
-        assert!(std::fs::read(output_path).unwrap().starts_with(b"%PDF-"));
+        assert_eq!(started.conversion.output_size, Some(16));
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"%PDF-1.7\nfixture");
+        assert!(!same_file::is_same_file(&source, &output_path).unwrap());
+        std::fs::write(&source, b"edited original").unwrap();
+        assert_eq!(std::fs::read(&output_path).unwrap(), b"%PDF-1.7\nfixture");
+        std::fs::write(&output_path, b"edited conversion").unwrap();
+        assert_eq!(std::fs::read(source).unwrap(), b"edited original");
     }
 
     #[tokio::test]
