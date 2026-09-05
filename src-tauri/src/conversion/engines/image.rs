@@ -4,6 +4,7 @@ use printpdf::{
     ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
     RawImage, RawImageData, RawImageFormat, XObjectTransform,
 };
+use std::io::Read;
 
 use crate::conversion::{
     ConversionEngine, ConversionError, ConversionRequest, ConversionResult, DetectedFormat,
@@ -14,6 +15,175 @@ pub struct ImagePdfEngine;
 
 // Physical placement only: fitting to A4 changes the PDF transform, never the pixels.
 const IMAGE_LAYOUT_DPI: f32 = 300.0;
+const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+
+fn read_image_source(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let oversized = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Image exceeds the 64 MiB source limit. Export a smaller image and try again.",
+        )
+    };
+    if file.metadata()?.len() > MAX_SOURCE_BYTES {
+        return Err(oversized());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SOURCE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(oversized());
+    }
+    Ok(bytes)
+}
+
+fn check_pixel_limit(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
+        return Err("Image exceeds the 40 megapixel limit or has invalid dimensions. Export a smaller image and try again.".into());
+    }
+    Ok(())
+}
+
+// Direct DCT embedding is safe for this narrow baseline JFIF subset. EXIF transforms,
+// ICC profiles, Adobe/CMYK color interpretation, and other JPEG variants use the decoder.
+fn direct_jpeg_info(bytes: &[u8]) -> Option<(u32, u32, bool)> {
+    if !bytes.starts_with(&[0xff, 0xd8]) || !bytes.ends_with(&[0xff, 0xd9]) {
+        return None;
+    }
+    let mut offset = 2;
+    let mut jfif = false;
+    let mut frame = None;
+    while offset < bytes.len() {
+        if *bytes.get(offset)? != 0xff {
+            return None;
+        }
+        while *bytes.get(offset)? == 0xff {
+            offset += 1;
+        }
+        let marker = *bytes.get(offset)?;
+        offset += 1;
+        let length = u16::from_be_bytes([*bytes.get(offset)?, *bytes.get(offset + 1)?]) as usize;
+        if length < 2 {
+            return None;
+        }
+        let segment = bytes.get(offset + 2..offset.checked_add(length)?)?;
+        offset += length;
+        match marker {
+            0xe0 => jfif |= segment.starts_with(b"JFIF\0"),
+            0xe1 if segment.starts_with(b"Exif\0\0") => {
+                if image::metadata::Orientation::from_exif_chunk(&segment[6..])?
+                    != image::metadata::Orientation::NoTransforms
+                {
+                    return None;
+                }
+            }
+            0xe2 | 0xee => return None,
+            0xc0 => {
+                if frame.is_some() || *segment.first()? != 8 {
+                    return None;
+                }
+                let height = u16::from_be_bytes([*segment.get(1)?, *segment.get(2)?]) as u32;
+                let width = u16::from_be_bytes([*segment.get(3)?, *segment.get(4)?]) as u32;
+                let components = *segment.get(5)? as usize;
+                if !matches!(components, 1 | 3) || segment.len() != 6 + 3 * components {
+                    return None;
+                }
+                for index in 0..components {
+                    if segment[6 + index * 3] != (index + 1) as u8 {
+                        return None;
+                    }
+                }
+                frame = Some((width, height, components == 1));
+            }
+            0xda => {
+                let (_, _, grayscale) = frame?;
+                let components = *segment.first()? as usize;
+                if !jfif
+                    || components != if grayscale { 1 } else { 3 }
+                    || segment.len() != 4 + 2 * components
+                    || offset >= bytes.len() - 2
+                    || segment[segment.len() - 3..] != [0, 63, 0]
+                {
+                    return None;
+                }
+                for index in 0..components {
+                    if segment[1 + index * 2] != (index + 1) as u8 {
+                        return None;
+                    }
+                }
+                // Require a single complete baseline scan. Other scans or metadata
+                // after SOS must go through the decoder rather than bypassing checks.
+                while offset < bytes.len() {
+                    if bytes[offset] != 0xff {
+                        offset += 1;
+                        continue;
+                    }
+                    while *bytes.get(offset)? == 0xff {
+                        offset += 1;
+                    }
+                    let scan_marker = *bytes.get(offset)?;
+                    offset += 1;
+                    match scan_marker {
+                        0 | 0xd0..=0xd7 => {}
+                        0xd9 if offset == bytes.len() => return frame,
+                        _ => return None,
+                    }
+                }
+                return None;
+            }
+            // Standard baseline metadata, quantization/Huffman tables, restart interval.
+            0xdb | 0xc4 | 0xdd | 0xfe | 0xe1 | 0xe3..=0xed | 0xef => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn prepare_image(bytes: Vec<u8>) -> Result<(usize, usize, printpdf::XObject), String> {
+    if let Some((width, height, grayscale)) = direct_jpeg_info(&bytes) {
+        check_pixel_limit(width, height)?;
+        // Validate JPEG headers with the maintained decoder too, without allocating
+        // the full decoded raster. The original entropy stream remains untouched.
+        image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(&bytes))
+            .map_err(|error| error.to_string())?;
+        use printpdf::DictItem::{Int, Name};
+        let external = printpdf::ExternalXObject {
+            stream: printpdf::ExternalStream {
+                dict: [
+                    ("Type".into(), Name(b"XObject".to_vec())),
+                    ("Subtype".into(), Name(b"Image".to_vec())),
+                    ("Width".into(), Int(width.into())),
+                    ("Height".into(), Int(height.into())),
+                    ("BitsPerComponent".into(), Int(8)),
+                    (
+                        "ColorSpace".into(),
+                        Name(if grayscale {
+                            b"DeviceGray".to_vec()
+                        } else {
+                            b"DeviceRGB".to_vec()
+                        }),
+                    ),
+                    ("Filter".into(), Name(b"DCTDecode".to_vec())),
+                ]
+                .into(),
+                content: bytes,
+                compress: false,
+            },
+            width: Some(printpdf::Px(width as usize)),
+            height: Some(printpdf::Px(height as usize)),
+            dpi: Some(IMAGE_LAYOUT_DPI),
+        };
+        Ok((
+            width as usize,
+            height as usize,
+            printpdf::XObject::External(external),
+        ))
+    } else {
+        let image = decode_oriented_image(&bytes)?;
+        Ok((image.width, image.height, printpdf::XObject::Image(image)))
+    }
+}
 
 fn preserve_detail_save_options() -> PdfSaveOptions {
     PdfSaveOptions {
@@ -35,11 +205,21 @@ fn preserve_detail_save_options() -> PdfSaveOptions {
 }
 
 fn decode_oriented_image(bytes: &[u8]) -> Result<RawImage, String> {
-    let mut decoder = ImageReader::new(std::io::Cursor::new(bytes))
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
-        .map_err(|error| error.to_string())?
-        .into_decoder()
         .map_err(|error| error.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().map_err(|error| error.to_string())?;
+    let (width, height) = decoder.dimensions();
+    check_pixel_limit(width, height)?;
+    if decoder.total_bytes() > MAX_DECODED_BYTES {
+        return Err(
+            "Image exceeds the 64 MiB decoded-pixel limit. Export a smaller image and try again."
+                .into(),
+        );
+    }
     // Missing or malformed optional metadata must not prevent decoding the pixels.
     let orientation = decoder
         .orientation()
@@ -98,18 +278,18 @@ impl ConversionEngine for ImagePdfEngine {
         let source_name = request.source_name.clone();
         let output_size = tokio::task::spawn_blocking(move || {
             let bytes =
-                std::fs::read(&source_path).map_err(|source| ConversionError::ReadSource {
+                read_image_source(&source_path).map_err(|source| ConversionError::ReadSource {
                     path: source_path.clone(),
                     source,
                 })?;
             let mut warnings = Vec::new();
-            let image = decode_oriented_image(&bytes).map_err(|error| {
+            let (image_width, image_height, image) = prepare_image(bytes).map_err(|error| {
                 ConversionError::ConversionFailed(format!(
                     "The image could not be decoded: {error}"
                 ))
             })?;
 
-            let (page_width, page_height) = if image.width > image.height {
+            let (page_width, page_height) = if image_width > image_height {
                 (Mm(297.0), Mm(210.0))
             } else {
                 (Mm(210.0), Mm(297.0))
@@ -117,8 +297,8 @@ impl ConversionEngine for ImagePdfEngine {
             let margin_pt = Mm(10.0).into_pt().0;
             let available_width = page_width.into_pt().0 - margin_pt * 2.0;
             let available_height = page_height.into_pt().0 - margin_pt * 2.0;
-            let native_width = image.width as f32 * 72.0 / IMAGE_LAYOUT_DPI;
-            let native_height = image.height as f32 * 72.0 / IMAGE_LAYOUT_DPI;
+            let native_width = image_width as f32 * 72.0 / IMAGE_LAYOUT_DPI;
+            let native_height = image_height as f32 * 72.0 / IMAGE_LAYOUT_DPI;
             let scale = (available_width / native_width)
                 .min(available_height / native_height)
                 .min(1.0);
@@ -126,7 +306,13 @@ impl ConversionEngine for ImagePdfEngine {
             let rendered_height = native_height * scale;
 
             let mut document = PdfDocument::new(&source_name);
-            let image_id = document.add_image(&image);
+            // Move the owned stream/pixels into the document; add_image would clone them.
+            let image_id = printpdf::XObjectId::new();
+            document
+                .resources
+                .xobjects
+                .map
+                .insert(image_id.clone(), image);
             let page = PdfPage::new(
                 page_width,
                 page_height,
@@ -168,7 +354,9 @@ mod tests {
     use std::io::Cursor;
     use std::path::PathBuf;
 
-    use super::{decode_oriented_image, ImagePdfEngine};
+    use super::{
+        decode_oriented_image, direct_jpeg_info, prepare_image, read_image_source, ImagePdfEngine,
+    };
     use crate::conversion::{detect_format, ConversionEngine, ConversionRequest, EngineOutput};
 
     fn asymmetric_jpeg() -> Vec<u8> {
@@ -181,6 +369,148 @@ mod tests {
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
             .unwrap();
         jpeg.into_inner()
+    }
+
+    #[test]
+    fn embeds_compatible_jpeg_as_original_dct_stream_without_copying_its_buffer() {
+        let jpeg = asymmetric_jpeg();
+        let expected = jpeg.clone();
+        let source_pointer = jpeg.as_ptr();
+        let (width, height, object) = prepare_image(jpeg).unwrap();
+        assert_eq!((width, height), (3, 2));
+        let printpdf::XObject::External(external) = &object else {
+            panic!("compatible baseline JFIF should avoid pixel decoding");
+        };
+        assert_eq!(external.stream.content.as_ptr(), source_pointer);
+        assert_eq!(external.stream.content, expected);
+        let mut document = printpdf::PdfDocument::new("direct JPEG");
+        let id = printpdf::XObjectId::new();
+        document.resources.xobjects.map.insert(id.clone(), object);
+        document.pages.push(printpdf::PdfPage::new(
+            printpdf::Mm(210.0),
+            printpdf::Mm(297.0),
+            vec![printpdf::Op::UseXobject {
+                id,
+                transform: printpdf::XObjectTransform::default(),
+            }],
+        ));
+        let pdf =
+            document.to_lopdf_document(&super::preserve_detail_save_options(), &mut Vec::new());
+        let stream = pdf
+            .objects
+            .values()
+            .filter_map(|object| object.as_stream().ok())
+            .find(|stream| {
+                stream
+                    .dict
+                    .get(b"Subtype")
+                    .and_then(|value| value.as_name())
+                    .ok()
+                    == Some(b"Image".as_slice())
+            })
+            .unwrap();
+        assert_eq!(
+            stream.dict.get(b"Filter").unwrap().as_name().unwrap(),
+            b"DCTDecode"
+        );
+        assert_eq!(stream.content, expected);
+    }
+
+    #[test]
+    fn rotated_or_color_profile_jpegs_use_the_normalizing_decoder() {
+        let jpeg = asymmetric_jpeg();
+        for orientation in 2..=8 {
+            let bytes = oriented_jpeg(&jpeg, orientation, true);
+            assert!(direct_jpeg_info(&bytes).is_none());
+            assert!(matches!(
+                prepare_image(bytes).unwrap().2,
+                printpdf::XObject::Image(_)
+            ));
+        }
+        for marker in [0xe2, 0xee] {
+            let mut bytes = jpeg[..2].to_vec();
+            bytes.extend_from_slice(&[0xff, marker, 0, 2]);
+            bytes.extend_from_slice(&jpeg[2..]);
+            assert!(direct_jpeg_info(&bytes).is_none());
+        }
+        for bytes in [
+            &jpeg[..jpeg.len() - 2],
+            &[0xff, 0xd8, 0xff, 0xe0, 0, 1, 0xff, 0xd9][..],
+        ] {
+            assert!(direct_jpeg_info(bytes).is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_source_and_header_dimensions_before_pixel_allocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oversized.jpg");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(super::MAX_SOURCE_BYTES + 1)
+            .unwrap();
+        assert!(read_image_source(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("64 MiB source limit"));
+        let mut jpeg = asymmetric_jpeg();
+        let frame = jpeg
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xc0])
+            .unwrap();
+        jpeg[frame + 5..frame + 7].copy_from_slice(&6000u16.to_be_bytes());
+        jpeg[frame + 7..frame + 9].copy_from_slice(&8000u16.to_be_bytes());
+        assert!(prepare_image(jpeg.clone())
+            .unwrap_err()
+            .contains("40 megapixel"));
+        jpeg[frame + 5..frame + 7].copy_from_slice(&5000u16.to_be_bytes());
+        jpeg[frame + 7..frame + 9].copy_from_slice(&5000u16.to_be_bytes());
+        let rotated = oriented_jpeg(&jpeg, 6, true);
+        assert!(prepare_image(rotated)
+            .unwrap_err()
+            .to_lowercase()
+            .contains("limit"));
+    }
+
+    #[tokio::test]
+    async fn preserves_transparency_on_the_decode_path() {
+        let pixels = image::RgbaImage::from_fn(7, 5, |x, y| {
+            image::Rgba([(x * 35) as u8, (y * 50) as u8, 100, (x * y * 9) as u8])
+        });
+        let expected = pixels.as_raw().clone();
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let embedded = embedded_image_after_conversion(png.get_ref(), "png").await;
+        assert_eq!((embedded.width, embedded.height), (7, 5));
+        assert_eq!(embedded.data_format, printpdf::RawImageFormat::RGBA8);
+        assert_eq!(embedded.pixels, printpdf::RawImageData::U8(expected));
+    }
+
+    #[test]
+    #[ignore = "manual 12-megapixel preparation timing; no timing threshold"]
+    fn measure_large_jpeg_preparation() {
+        let pixels = image::RgbImage::from_fn(4000, 3000, |x, y| {
+            image::Rgb([x as u8, y as u8, (x ^ y) as u8])
+        });
+        let mut jpeg = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let bytes = jpeg.into_inner();
+        let encoded_size = bytes.len();
+        let input = bytes.clone();
+        let start = std::time::Instant::now();
+        let direct = prepare_image(input).unwrap();
+        let direct_time = start.elapsed();
+        assert!(matches!(direct.2, printpdf::XObject::External(_)));
+        drop(direct);
+        let start = std::time::Instant::now();
+        let decoded = decode_oriented_image(&bytes).unwrap();
+        let decoded_time = start.elapsed();
+        assert_eq!((decoded.width, decoded.height), (4000, 3000));
+        println!("JPEG preparation: direct={direct_time:?}, decoded={decoded_time:?}, encoded={encoded_size} bytes, avoided raster=36000000 bytes");
     }
 
     fn with_exif(jpeg: &[u8], tiff: &[u8]) -> Vec<u8> {
