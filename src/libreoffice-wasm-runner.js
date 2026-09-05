@@ -1,6 +1,21 @@
 // This small adapter owns the pinned LibreOffice worker's init/convert protocol.
 // The package's browser client does not reject requests on fatal worker errors,
 // and its graceful destroy waits for a response that a stuck worker cannot send.
+export class WasmCompletionError extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "WasmCompletionError";
+  }
+}
+
+export async function failWasmConversion(invoke, id, error) {
+  // Completion consumes the pending backend job and owns its terminal status.
+  // A second failure command would hide the save error behind a stale-job error.
+  if (error instanceof WasmCompletionError) throw error.cause;
+  const message = error instanceof Error ? error.message : String(error);
+  return invoke("fail_wasm_conversion", { id, error: message.replace(/\n.*/s, "").slice(0, 600) });
+}
+
 export class LibreOfficeWasmRunner {
   #session = null;
   #active = null;
@@ -22,7 +37,7 @@ export class LibreOfficeWasmRunner {
     if (!this.isIsolated()) {
       throw new Error("The local LibreOffice runtime requires cross-origin isolation, but this app window is not isolated.");
     }
-    const job = { onProgress, error: null, reject: null };
+    const job = { onProgress, error: null, reject: null, completing: false };
     const interrupted = new Promise((_, reject) => { job.reject = reject; });
     job.interrupted = interrupted;
     this.#active = job;
@@ -47,6 +62,7 @@ export class LibreOfficeWasmRunner {
         }, "result", [input.buffer]);
         // A cancellation, timeout or replaced worker must never publish a late PDF.
         this.#assertActive(job);
+        job.completing = true;
         const result = await this.invoke("complete_wasm_conversion", data, {
           headers: { "x-conversion-id": task.conversionId },
         });
@@ -58,6 +74,7 @@ export class LibreOfficeWasmRunner {
       return await Promise.race([work(), interrupted]);
     } catch (error) {
       this.#stop(error);
+      if (job.completing && error?.name !== "AbortError") throw new WasmCompletionError(error);
       throw error;
     } finally {
       if (this.#active === job) this.#active = null;

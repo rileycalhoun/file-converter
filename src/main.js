@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createWasmPaths } from "@matbee/libreoffice-converter/browser";
 import { ConversionGuard } from "./conversion-guard.js";
-import { LibreOfficeWasmRunner } from "./libreoffice-wasm-runner.js";
+import { LibreOfficeWasmRunner, failWasmConversion } from "./libreoffice-wasm-runner.js";
 
 const state = {
   selectedPath: null,
@@ -102,10 +102,7 @@ async function beginConversion(createStart) {
       });
     } catch (error) {
       if (error?.name === "AbortError" || state.cancellationRequested) return;
-      conversion = await invoke("fail_wasm_conversion", {
-        id: start.wasmTask.conversionId,
-        error: safeEngineError(error),
-      });
+      conversion = await failWasmConversion(invoke, start.wasmTask.conversionId, error);
     }
     finishUiConversion(conversion);
   } catch (error) {
@@ -329,11 +326,6 @@ function showStatus(message, kind) {
 
 function hideStatus() {
   elements.status.style.display = "none";
-}
-
-function safeEngineError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\n.*/s, "").slice(0, 600);
 }
 
 function fileName(path) {
