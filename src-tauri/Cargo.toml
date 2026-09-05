@@ -17,6 +17,7 @@ anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 printpdf = { version = "0.12.7", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 portpicker = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -31,6 +32,3 @@ tempfile = "3"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zstd = "0.13"
-
-[dev-dependencies]
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
