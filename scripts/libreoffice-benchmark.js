@@ -10,10 +10,10 @@ export async function benchmarkLibreOffice({ input, inputFormat = "docx", wasmPa
   let phases = [];
   let expired = false;
   const started = performance.now();
-  const runner = createRunner({ wasmPaths, initializationTimeoutMs: deadlineMs, conversionTimeoutMs: deadlineMs,
+  const runner = createRunner({ wasmPaths, initializationTimeoutMs: deadlineMs, conversionTimeoutMs: deadlineMs, transferInputOwnership: true,
     onTiming: (timing) => phases.push(timing),
     invoke: async (command, data) => {
-      if (command === "read_conversion_input") return new Uint8Array(input);
+      if (command === "read_conversion_input") return new Uint8Array(input).slice();
       if (command === "complete_wasm_conversion") {
         const bytes = new Uint8Array(data);
         if (new TextDecoder().decode(bytes.subarray(0, 5)) !== "%PDF-") throw new Error("Worker did not return a PDF.");
