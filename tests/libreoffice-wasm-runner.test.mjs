@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LibreOfficeWasmRunner } from "../src/libreoffice-wasm-runner.js";
+import { LibreOfficeWasmRunner, failWasmConversion, WasmCompletionError } from "../src/libreoffice-wasm-runner.js";
 import { ConversionGuard } from "../src/conversion-guard.js";
 
 const task = { conversionId: "job-1", inputFormat: "docx", fileName: "sample.docx" };
@@ -191,4 +191,71 @@ test("a synchronous postMessage failure rejects, terminates and clears the pendi
   await initialize(workers[1]);
   workers[1].respond("result", pdf);
   await next;
+});
+
+for (const saveError of ["Could not save PDF: No space left on device", new Error("Could not save PDF: Permission denied")]) {
+  test(`completion preserves ${String(saveError)} without a second terminal transition`, async () => {
+    const history = new Map();
+    const calls = [];
+    let failSave = true;
+    const invoke = async (command, payload, options) => {
+      calls.push(command);
+      if (command === "read_conversion_input") return [1, 2, 3];
+      if (command === "complete_wasm_conversion") {
+        const id = options.headers["x-conversion-id"];
+        history.set(id, { status: failSave ? "failed" : "finished", error: failSave ? String(saveError) : null });
+        if (failSave) throw saveError;
+        return history.get(id);
+      }
+      throw new Error("The conversion is no longer active.");
+    };
+    const { runner, workers } = setup({ invoke });
+    const guard = new ConversionGuard();
+    const token = guard.begin();
+    const pending = runner.convert(task)
+      .catch((error) => failWasmConversion(invoke, task.conversionId, error))
+      .finally(() => guard.finish(token));
+    const rejected = assert.rejects(pending, (error) => error === saveError);
+    await initialize(workers[0]);
+    workers[0].respond("result", pdf);
+    await rejected;
+    assert.equal(guard.isActive, false);
+    assert.deepEqual(history.get(task.conversionId), { status: "failed", error: String(saveError) });
+    assert.deepEqual(calls, ["read_conversion_input", "complete_wasm_conversion"]);
+    failSave = false;
+    const next = runner.convert({ ...task, conversionId: "job-2" });
+    await initialize(workers[1]);
+    workers[1].respond("result", pdf);
+    assert.equal((await next).status, "finished");
+  });
+}
+
+test("worker failures still persist one failed history record", async () => {
+  const { runner, workers, calls } = setup();
+  const pending = runner.convert(task)
+    .catch((error) => failWasmConversion(runner.invoke, task.conversionId, error));
+  await initialize(workers[0]);
+  workers[0].onerror({ message: "Worker crashed\nprivate stack detail" });
+  await pending;
+  assert.deepEqual(calls.at(-1), ["fail_wasm_conversion", { id: task.conversionId, error: "Worker crashed" }]);
+  assert.equal(calls.filter(([command]) => command === "fail_wasm_conversion").length, 1);
+});
+
+test("a deadline after completion begins never issues a second backend transition", async () => {
+  const calls = [];
+  const invoke = async (command) => {
+    calls.push(command);
+    if (command === "read_conversion_input") return [1, 2, 3];
+    return new Promise(() => {});
+  };
+  const { runner, workers } = setup({ invoke, conversionTimeoutMs: 30 });
+  const pending = runner.convert(task).catch(async (error) => {
+    assert.ok(error instanceof WasmCompletionError);
+    return failWasmConversion(invoke, task.conversionId, error);
+  });
+  const rejected = assert.rejects(pending, /timed out/);
+  await initialize(workers[0]);
+  workers[0].respond("result", pdf);
+  await rejected;
+  assert.deepEqual(calls, ["read_conversion_input", "complete_wasm_conversion"]);
 });
