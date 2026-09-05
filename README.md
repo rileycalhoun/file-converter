@@ -99,6 +99,15 @@ directory. New history rows store metadata and the output path, not a second PDF
 BLOB. Schema upgrades add source path, detected format, engine, sizes, and
 completion time without recreating the database.
 
+History loads when its dialog opens, initially showing 50 entries. **Load more**
+appends older entries without rebuilding already displayed rows. Pages use an
+indexed timestamp-and-ID cursor, so equal timestamps and deletion of a boundary
+row do not skip or repeat older conversions; reopening History refreshes the
+newest page. Each request is capped at 100 entries. Database and file-availability
+work runs in the bounded background worker, with probes only for returned rows,
+and file actions recheck availability when used. Legacy saved-copy flags are read
+with the page metadata, without transferring stored PDF contents to the UI.
+
 On macOS, the application home is `~/Library/Application Support/FileConverter`.
 Existing history is copied there once from the older identifier-based directory.
 Windows and Linux use a `FileConverter` folder under their standard application-data

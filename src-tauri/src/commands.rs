@@ -10,7 +10,7 @@ use crate::{
         detect_format, publish_output, supported_formats, unique_output_path, ConversionStart,
         SupportedFormat,
     },
-    database::{Conversion, Database},
+    database::{Conversion, Database, HistoryCursor, DEFAULT_HISTORY_PAGE_SIZE},
     AppState,
 };
 
@@ -40,6 +40,13 @@ pub(crate) struct HistoryEntry {
     availability: OpenConversionResult,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HistoryPage {
+    entries: Vec<HistoryEntry>,
+    next_cursor: Option<HistoryCursor>,
+}
+
 #[tauri::command]
 pub(crate) fn get_supported_formats() -> Vec<SupportedFormat> {
     supported_formats().to_vec()
@@ -64,14 +71,84 @@ pub(crate) fn inspect_source(input_path: String) -> Result<DetectedSource, Strin
 }
 
 #[tauri::command]
-pub(crate) fn list_conversions(state: State<'_, AppState>) -> Result<Vec<HistoryEntry>, String> {
-    let database = state.service.database();
-    database
-        .list_conversions()
+pub(crate) async fn list_conversions(
+    state: State<'_, AppState>,
+    after: Option<HistoryCursor>,
+    page_size: Option<usize>,
+) -> Result<HistoryPage, String> {
+    let database = state.service.database_handle();
+    state
+        .service
+        .blocking_io()
+        .run(move || {
+            history_page(
+                &database,
+                after.as_ref(),
+                page_size.unwrap_or(DEFAULT_HISTORY_PAGE_SIZE),
+                |path| path.is_file(),
+            )
+        })
+        .await
         .map_err(error_message)?
+}
+
+fn history_page(
+    database: &Database,
+    after: Option<&HistoryCursor>,
+    page_size: usize,
+    mut is_file: impl FnMut(&Path) -> bool,
+) -> Result<HistoryPage, String> {
+    let page = database
+        .list_conversions(after, page_size)
+        .map_err(error_message)?;
+    // The database mutex is released before filesystem probes. Only visible rows
+    // are checked, never the lookahead row or the rest of the history.
+    let entries = page
+        .entries
         .into_iter()
-        .map(|conversion| history_entry(database, conversion))
-        .collect()
+        .map(|row| {
+            let conversion = row.conversion;
+            let missing = conversion
+                .output_path
+                .as_deref()
+                .map(Path::new)
+                .is_none_or(|path| !is_file(path));
+            let availability = OpenConversionResult {
+                missing,
+                restorable: missing && row.has_stored_file,
+                reconvertible: missing
+                    && conversion
+                        .source_path
+                        .as_deref()
+                        .is_some_and(|source| is_file(Path::new(source))),
+            };
+            HistoryEntry {
+                conversion,
+                availability,
+            }
+        })
+        .collect();
+    Ok(HistoryPage {
+        entries,
+        next_cursor: page.next_cursor,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn get_history_entry(
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<HistoryEntry, String> {
+    let database = state.service.database_handle();
+    state
+        .service
+        .blocking_io()
+        .run(move || {
+            let conversion = database.get_conversion(id).map_err(error_message)?;
+            history_entry(&database, conversion)
+        })
+        .await
+        .map_err(error_message)?
 }
 
 #[tauri::command]
@@ -275,6 +352,41 @@ fn error_message(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::database::NewConversion;
+
+    #[test]
+    fn history_availability_probes_only_returned_rows_not_the_lookahead_or_full_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite3");
+        let database = Database::open(&path).unwrap();
+        let mut connection = rusqlite::Connection::open(&path).unwrap();
+        let transaction = connection.transaction().unwrap();
+        for id in 1..=120 {
+            transaction.execute(
+                "INSERT INTO conversions (id, source_name, source_path, output_path, output_format, status, created_at)
+                 VALUES (?1, 'scan.png', '/missing/source.png', '/missing/output.pdf', 'pdf', 'finished', '2026-01-01T00:00:00Z')",
+                [Uuid::from_u128(id).to_string()],
+            ).unwrap();
+        }
+        transaction.commit().unwrap();
+        let mut probes = 0;
+        let page = history_page(&database, None, 50, |_| {
+            probes += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(page.entries.len(), 50);
+        assert!(page.next_cursor.is_some());
+        assert_eq!(probes, 100, "at most output + source per visible row");
+        let mut probes = 0;
+        let page = history_page(&database, page.next_cursor.as_ref(), 50, |_| {
+            probes += 1;
+            true
+        })
+        .unwrap();
+        assert_eq!(page.entries.len(), 50);
+        assert_eq!(probes, 50, "existing outputs do not require source probes");
+        assert!(page.entries.iter().all(|entry| !entry.availability.missing));
+    }
 
     fn stored_conversion(directory: &Path) -> (Database, Uuid, PathBuf) {
         let db_path = directory.join("history.sqlite3");

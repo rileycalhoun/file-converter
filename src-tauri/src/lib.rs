@@ -110,6 +110,7 @@ pub fn run() {
             commands::get_supported_formats,
             commands::inspect_source,
             commands::list_conversions,
+            commands::get_history_entry,
             commands::start_conversion,
             commands::reconvert,
             commands::read_conversion_input,
