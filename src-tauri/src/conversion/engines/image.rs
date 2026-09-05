@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 use printpdf::{
-    Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt, RawImage, RawImageData, RawImageFormat,
-    XObjectTransform,
+    ImageCompression, ImageOptimizationOptions, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Pt,
+    RawImage, RawImageData, RawImageFormat, XObjectTransform,
 };
 
 use crate::conversion::{
@@ -11,6 +11,28 @@ use crate::conversion::{
 };
 
 pub struct ImagePdfEngine;
+
+// Physical placement only: fitting to A4 changes the PDF transform, never the pixels.
+const IMAGE_LAYOUT_DPI: f32 = 300.0;
+
+fn preserve_detail_save_options() -> PdfSaveOptions {
+    PdfSaveOptions {
+        optimize: true,
+        subset_fonts: true,
+        secure: true,
+        image_optimization: Some(ImageOptimizationOptions {
+            // Flate preserves decoded samples without another lossy JPEG encoding.
+            format: Some(ImageCompression::Flate),
+            quality: None,
+            // The library default imposes a 2 MB decoded-pixel budget and resizes.
+            // Preserve the complete source resolution, regardless of page fit.
+            max_image_size: None,
+            auto_optimize: Some(false),
+            convert_to_greyscale: Some(false),
+            dither_greyscale: Some(false),
+        }),
+    }
+}
 
 fn decode_oriented_image(bytes: &[u8]) -> Result<RawImage, String> {
     let mut decoder = ImageReader::new(std::io::Cursor::new(bytes))
@@ -95,8 +117,8 @@ impl ConversionEngine for ImagePdfEngine {
             let margin_pt = Mm(10.0).into_pt().0;
             let available_width = page_width.into_pt().0 - margin_pt * 2.0;
             let available_height = page_height.into_pt().0 - margin_pt * 2.0;
-            let native_width = image.width as f32 * 72.0 / 300.0;
-            let native_height = image.height as f32 * 72.0 / 300.0;
+            let native_width = image.width as f32 * 72.0 / IMAGE_LAYOUT_DPI;
+            let native_height = image.height as f32 * 72.0 / IMAGE_LAYOUT_DPI;
             let scale = (available_width / native_width)
                 .min(available_height / native_height)
                 .min(1.0);
@@ -115,14 +137,14 @@ impl ConversionEngine for ImagePdfEngine {
                         translate_y: Some(Pt((page_height.into_pt().0 - rendered_height) / 2.0)),
                         scale_x: Some(scale),
                         scale_y: Some(scale),
-                        dpi: Some(300.0),
+                        dpi: Some(IMAGE_LAYOUT_DPI),
                         ..Default::default()
                     },
                 }],
             );
             let pdf = document
                 .with_pages(vec![page])
-                .save(&PdfSaveOptions::default(), &mut warnings);
+                .save(&preserve_detail_save_options(), &mut warnings);
             std::fs::write(&output_path, &pdf).map_err(|source| {
                 ConversionError::OutputWriteFailed {
                     path: output_path,
@@ -298,6 +320,85 @@ mod tests {
         assert_eq!(
             decoded.pixels,
             printpdf::RawImageData::U16(pixels.into_raw())
+        );
+    }
+
+    async fn embedded_image_after_conversion(bytes: &[u8], extension: &str) -> printpdf::RawImage {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join(format!("detail.{extension}"));
+        std::fs::write(&source, bytes).unwrap();
+        let request = ConversionRequest {
+            id: uuid::Uuid::new_v4(),
+            source_name: format!("detail.{extension}"),
+            detected: detect_format(&source).unwrap(),
+            source_path: source,
+            output_path: directory.path().join("detail.pdf"),
+            work_directory: directory.path().into(),
+            source_size: bytes.len() as u64,
+        };
+        ImagePdfEngine.convert(&request).await.unwrap();
+        let pdf = printpdf::PdfDocument::parse(
+            &std::fs::read(request.staged_output_path()).unwrap(),
+            &printpdf::PdfParseOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        pdf.resources
+            .xobjects
+            .map
+            .into_values()
+            .find_map(|object| match object {
+                printpdf::XObject::Image(image) => Some(image),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn preserves_full_resolution_and_fine_detail_in_a_4000_by_3000_scan() {
+        // 36 MB decoded: well beyond printpdf's implicit 2 MB budget. Single-pixel
+        // rules and alternating colors expose both downsampling and lossy encoding.
+        let pixels = image::RgbImage::from_fn(4000, 3000, |x, y| {
+            image::Rgb([
+                if x % 17 == 0 || y % 19 == 0 { 0 } else { 255 },
+                ((x + y) % 256) as u8,
+                ((x ^ y) % 256) as u8,
+            ])
+        });
+        let expected_pixels = pixels.as_raw().clone();
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let embedded = embedded_image_after_conversion(png.get_ref(), "png").await;
+        assert_eq!((embedded.width, embedded.height), (4000, 3000));
+        assert_eq!(embedded.data_format, printpdf::RawImageFormat::RGB8);
+        let printpdf::RawImageData::U8(actual) = embedded.pixels else {
+            panic!("expected 8-bit RGB pixels");
+        };
+        // Compare slices via a boolean to avoid dumping millions of bytes on failure.
+        assert!(
+            actual == expected_pixels,
+            "embedded fine detail must be pixel-exact"
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_decoded_jpeg_samples_without_additional_lossy_compression() {
+        let pixels = image::RgbImage::from_fn(97, 65, |x, y| {
+            image::Rgb([(x * 37) as u8, (y * 53) as u8, (x * y) as u8])
+        });
+        let mut jpeg = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let expected = decode_oriented_image(jpeg.get_ref()).unwrap();
+        let embedded = embedded_image_after_conversion(jpeg.get_ref(), "jpg").await;
+        assert_eq!((embedded.width, embedded.height), (97, 65));
+        assert_eq!(embedded.data_format, expected.data_format);
+        assert!(
+            embedded.pixels == expected.pixels,
+            "PDF must not add JPEG loss"
         );
     }
 
