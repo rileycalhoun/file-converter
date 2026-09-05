@@ -58,6 +58,38 @@ it. In particular, macro-enabled Office files, templates, WPS, WordPerfect,
 Visio, Publisher, Pages, Numbers, Keynote, and SVG input are not claimed by the
 selected WASM package's declared browser API.
 
+### Image PDF quality
+
+Image conversion always uses the preserve-detail policy: it embeds the full
+pixel width and height. Compatible baseline 8-bit JFIF JPEGs with no required
+orientation or special color handling retain their original compressed stream;
+other images use lossless Flate compression after decoding. There is no automatic
+downsampling, additional lossy JPEG compression, automatic grayscale
+conversion, or dithering. A 4000 × 3000 scan therefore stays 4000 × 3000 in the PDF
+(with dimensions exchanged when its EXIF orientation requires a quarter turn).
+
+Images are centered on A4 with 10 mm margins, using landscape pages for landscape
+images. The nominal 300 DPI sets physical placement for smaller images; larger
+images fit inside the margins using a PDF transform while retaining every source
+pixel. It is not a resolution cap. There is currently no reduced-quality mode or
+user-selectable DPI setting. Output files can be substantially larger than a
+source JPEG because preserving decoded detail avoids a second JPEG encoding.
+JPEGs requiring EXIF transforms or carrying ICC/Adobe color metadata use the
+decoder; transparency in other formats also remains on the decoding path.
+The PDF writer currently uses 8-bit image
+channels, so this policy preserves spatial detail but does not promise archival
+preservation of higher source bit depths or color profiles.
+
+To bound image conversion work, source files are limited to 64 MiB and images to
+40 million pixels. The decoding path additionally limits its pixel buffer and
+requests a decoder allocation limit of 64 MiB; direct JPEG embedding avoids that
+pixel buffer. Limits are checked before pixel decoding, and oversized files fail
+with an error asking for a smaller export, rather than silently losing detail.
+The source read is bounded even if a file grows during conversion. These are
+per-image limits, not a guarantee that total process memory stays below 64 MiB:
+decoder scratch space, PDF serialization, and concurrent work use additional
+memory. The native PDF serializer still buffers its output.
+
 ## Storage and history
 
 Converted PDFs are saved in the same directory as their selected source files.
@@ -125,6 +157,11 @@ replace or clear a conversion that is already running.
 same bundled LibreOffice WASM binary and converts generated DOCX, PPTX, XLSX,
 ODT, RTF, and TXT fixtures to PDF. Fixtures under `tests/fixtures` were generated
 for this repository and contain no downloaded document content.
+
+For bounded measurements using the actual browser worker, see
+[LibreOffice startup measurements and policy](docs/libreoffice-performance.md).
+The harness distinguishes fresh-worker initialization from warm reuse and does
+not save files or history.
 
 ## Building installers
 
