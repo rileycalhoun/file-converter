@@ -11,8 +11,10 @@ use uuid::Uuid;
 use crate::database::{Conversion, Database, NewConversion};
 
 use super::{
+    blocking_io::BlockingIo,
     detect_format,
     engines::{ImagePdfEngine, LibreOfficeWasmEngine, PdfPassthroughEngine},
+    output::{publish_staged_output, PublishedOutput},
     publish_output, ConversionEngine, DetectedFormat, EngineOutput,
 };
 
@@ -97,6 +99,7 @@ pub struct ConversionService {
     work_root: PathBuf,
     engines: Vec<Arc<dyn ConversionEngine>>,
     pending_wasm: Mutex<HashMap<Uuid, ConversionRequest>>,
+    blocking_io: BlockingIo,
 }
 
 impl ConversionService {
@@ -122,11 +125,20 @@ impl ConversionService {
             work_root,
             engines,
             pending_wasm: Mutex::new(HashMap::new()),
+            blocking_io: BlockingIo::new(),
         }
     }
 
     pub fn database(&self) -> &Database {
         &self.database
+    }
+
+    pub(crate) fn database_handle(&self) -> Arc<Database> {
+        self.database.clone()
+    }
+
+    pub(crate) fn blocking_io(&self) -> BlockingIo {
+        self.blocking_io.clone()
     }
 
     pub fn cleanup_stale_workdirs(&self) -> Result<(), ConversionError> {
@@ -249,7 +261,17 @@ impl ConversionService {
 
         match engine.convert(&request).await {
             Ok(EngineOutput::Complete(result)) => {
-                let conversion = self.finish_request(&request, result)?;
+                let database = self.database.clone();
+                let conversion = self
+                    .blocking_io
+                    .run(move || {
+                        let published = publish_staged_output(
+                            &request.output_path,
+                            &request.staged_output_path(),
+                        );
+                        Self::finish_request(&database, &request, result, published)
+                    })
+                    .await??;
                 Ok(ConversionStart {
                     conversion,
                     wasm_task: None,
@@ -270,7 +292,7 @@ impl ConversionService {
                 })
             }
             Err(error) => {
-                self.cleanup_request(&request);
+                Self::cleanup_request(&request);
                 let failed = self.database.mark_failed(id, &error.to_string()).map_err(
                     |database_error| ConversionError::Persistence(database_error.to_string()),
                 )?;
@@ -311,33 +333,36 @@ impl ConversionService {
             })
     }
 
-    pub fn complete_wasm(&self, id: Uuid, pdf: &[u8]) -> Result<Conversion, ConversionError> {
-        if !pdf.starts_with(b"%PDF-") {
-            return self.fail_wasm(id, "The conversion engine returned an invalid PDF.");
-        }
+    pub async fn complete_wasm(&self, id: Uuid, pdf: &[u8]) -> Result<Conversion, ConversionError> {
+        // Acquire capacity before cloning a potentially large IPC payload or
+        // claiming the pending request. Queued jobs remain cancellable.
+        let permit = self.blocking_io.acquire().await?;
         let request = self.take_pending(id)?;
-        let staged = request.staged_output_path();
-        if let Err(source) = std::fs::write(&staged, pdf) {
-            let error = ConversionError::OutputWriteFailed {
-                path: staged,
-                source,
-            };
-            self.cleanup_request(&request);
-            let _ = self.database.mark_failed(id, &error.to_string());
-            return Err(error);
-        }
-        self.finish_request(
-            &request,
-            ConversionResult {
+        let valid = pdf.starts_with(b"%PDF-");
+        let pdf = if valid { pdf.to_vec() } else { Vec::new() };
+        let database = self.database.clone();
+        BlockingIo::run_with_permit(permit, move || {
+            if !valid {
+                Self::cleanup_request(&request);
+                return database
+                    .mark_failed(id, "The conversion engine returned an invalid PDF.")
+                    .map_err(|error| ConversionError::Persistence(error.to_string()));
+            }
+            let result = ConversionResult {
                 engine: "libreoffice-wasm".into(),
                 output_size: pdf.len() as u64,
-            },
-        )
+            };
+            // Browser output can go straight to destination-local staging. It
+            // does not need a full write and reread in the application cache.
+            let published = publish_output(&request.output_path, pdf.as_slice());
+            Self::finish_request(&database, &request, result, published)
+        })
+        .await?
     }
 
     pub fn fail_wasm(&self, id: Uuid, error: &str) -> Result<Conversion, ConversionError> {
         let request = self.take_pending(id)?;
-        self.cleanup_request(&request);
+        Self::cleanup_request(&request);
         self.database
             .mark_failed(id, &friendly_wasm_error(error))
             .map_err(|database_error| ConversionError::Persistence(database_error.to_string()))
@@ -345,7 +370,7 @@ impl ConversionService {
 
     pub fn cancel(&self, id: Uuid) -> Result<Conversion, ConversionError> {
         let request = self.take_pending(id)?;
-        self.cleanup_request(&request);
+        Self::cleanup_request(&request);
         self.database
             .mark_cancelled(id)
             .map_err(|error| ConversionError::Persistence(error.to_string()))
@@ -381,26 +406,24 @@ impl ConversionService {
     }
 
     fn finish_request(
-        &self,
+        database: &Database,
         request: &ConversionRequest,
         result: ConversionResult,
+        published: std::io::Result<PublishedOutput>,
     ) -> Result<Conversion, ConversionError> {
-        let staged = request.staged_output_path();
-        let published = match std::fs::File::open(&staged)
-            .and_then(|contents| publish_output(&request.output_path, contents))
-        {
+        let published = match published {
             Ok(published) => published,
             Err(source) => {
                 let error = ConversionError::OutputWriteFailed {
                     path: request.output_path.clone(),
                     source,
                 };
-                self.cleanup_request(request);
-                let _ = self.database.mark_failed(request.id, &error.to_string());
+                Self::cleanup_request(request);
+                let _ = database.mark_failed(request.id, &error.to_string());
                 return Err(error);
             }
         };
-        let conversion = match self.database.mark_finished(
+        let conversion = match database.mark_finished(
             request.id,
             published.path(),
             &result.engine,
@@ -408,16 +431,16 @@ impl ConversionService {
         ) {
             Ok(conversion) => conversion,
             Err(error) => {
-                self.cleanup_request(request);
+                Self::cleanup_request(request);
                 return Err(ConversionError::Persistence(error.to_string()));
             }
         };
         published.commit();
-        self.cleanup_request(request);
+        Self::cleanup_request(request);
         Ok(conversion)
     }
 
-    fn cleanup_request(&self, request: &ConversionRequest) {
+    fn cleanup_request(request: &ConversionRequest) {
         let _ = std::fs::remove_dir_all(&request.work_directory);
     }
 }
@@ -497,6 +520,7 @@ mod tests {
 
         let finished = service
             .complete_wasm(task.conversion_id, b"%PDF-completed")
+            .await
             .unwrap();
         let actual = PathBuf::from(finished.output_path.unwrap());
         assert_ne!(actual, preferred);
@@ -528,6 +552,7 @@ mod tests {
 
         assert!(service
             .complete_wasm(task.conversion_id, b"%PDF-completed")
+            .await
             .is_err());
         assert_eq!(std::fs::read(request.output_path).unwrap(), b"existing PDF");
         assert!(!request.work_directory.exists());
@@ -542,6 +567,60 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn browser_pdf_is_published_without_a_second_cache_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(database, directory.path().join("work"));
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+        let work_directory = service.pending_wasm.lock().unwrap()[&task.conversion_id]
+            .work_directory
+            .clone();
+        // Browser completion needs only destination-local staging, even if its
+        // original cache directory is no longer writable or available.
+        std::fs::remove_dir_all(&work_directory).unwrap();
+        let mut pdf = vec![b' '; 2 * 1024 * 1024];
+        pdf[..5].copy_from_slice(b"%PDF-");
+        let finished = service
+            .complete_wasm(task.conversion_id, &pdf)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(finished.output_path.unwrap()).unwrap(), pdf);
+        assert!(!work_directory.exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn completion_waiting_for_worker_capacity_remains_cancellable() {
+        use std::{future::Future, task::Poll};
+
+        let directory = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&directory.path().join("db.sqlite3")).unwrap());
+        let service = ConversionService::new(database, directory.path().join("work"));
+        let source = directory.path().join("notes.txt");
+        std::fs::write(&source, b"fixture").unwrap();
+        let task = service.start(source).await.unwrap().wasm_task.unwrap();
+        let first = service.blocking_io.acquire().await.unwrap();
+        let second = service.blocking_io.acquire().await.unwrap();
+        let completion = service.complete_wasm(task.conversion_id, b"%PDF-completed");
+        tokio::pin!(completion);
+        std::future::poll_fn(|context| {
+            assert!(completion.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(
+            service.cancel(task.conversion_id).unwrap().status,
+            "cancelled"
+        );
+        drop((first, second));
+        assert!(matches!(
+            completion.await,
+            Err(super::ConversionError::StaleJob)
+        ));
     }
 
     #[tokio::test]
@@ -607,6 +686,7 @@ mod tests {
         assert_eq!(cancelled.status, "cancelled");
         assert!(service
             .complete_wasm(task.conversion_id, b"%PDF-1.7\nstale")
+            .await
             .is_err());
     }
 
