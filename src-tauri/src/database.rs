@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub struct Database {
@@ -43,6 +43,28 @@ pub struct StoredFile {
     pub source_name: String,
     pub bytes: Vec<u8>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCursor {
+    // Preserve the stored timestamp spelling: normalizing Z/+00:00 or fractional
+    // seconds would change the indexed text comparison at a page boundary.
+    pub created_at: String,
+    pub id: Uuid,
+}
+
+pub struct ConversionHistoryRow {
+    pub conversion: Conversion,
+    pub has_stored_file: bool,
+}
+
+pub struct ConversionPage {
+    pub entries: Vec<ConversionHistoryRow>,
+    pub next_cursor: Option<HistoryCursor>,
+}
+
+pub const DEFAULT_HISTORY_PAGE_SIZE: usize = 50;
+pub const MAX_HISTORY_PAGE_SIZE: usize = 100;
 
 struct StoredFileRow {
     source_name: String,
@@ -129,6 +151,10 @@ impl Database {
         ] {
             add_column_if_missing(&connection, "conversions", column, definition)?;
         }
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS conversions_history_order ON conversions(created_at DESC, id DESC)",
+            [],
+        )?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -172,14 +198,55 @@ impl Database {
         query_conversion(&connection, id)?.context("Conversion was not found.")
     }
 
-    pub fn list_conversions(&self) -> Result<Vec<Conversion>> {
+    pub fn list_conversions(
+        &self,
+        after: Option<&HistoryCursor>,
+        page_size: usize,
+    ) -> Result<ConversionPage> {
+        let page_size = page_size.clamp(1, MAX_HISTORY_PAGE_SIZE);
         let connection = self.lock()?;
+        let boundary = if after.is_some() {
+            "WHERE (created_at, id) < (?1, ?2)"
+        } else {
+            ""
+        };
         let mut statement = connection.prepare(&format!(
-            "SELECT {CONVERSION_COLUMNS} FROM conversions ORDER BY created_at DESC"
+            "SELECT {CONVERSION_COLUMNS},
+                CASE WHEN output_data IS NOT NULL THEN 1
+                     WHEN output_base64 IS NULL THEN 0 ELSE output_base64 <> '' END
+             FROM conversions {boundary} ORDER BY created_at DESC, id DESC LIMIT ?3"
         ))?;
-        let rows = statement.query_map([], conversion_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(Into::into)
+        let rows = statement.query_map(
+            params![
+                after.map(|cursor| cursor.created_at.as_str()),
+                after.map(|cursor| cursor.id.to_string()),
+                page_size + 1
+            ],
+            |row| {
+                Ok((
+                    ConversionHistoryRow {
+                        conversion: conversion_from_row(row)?,
+                        has_stored_file: row.get(13)?,
+                    },
+                    row.get::<_, String>(11)?,
+                ))
+            },
+        )?;
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let has_more = rows.len() > page_size;
+        rows.truncate(page_size);
+        let next_cursor = if has_more {
+            rows.last().map(|(row, timestamp)| HistoryCursor {
+                created_at: timestamp.clone(),
+                id: row.conversion.id,
+            })
+        } else {
+            None
+        };
+        Ok(ConversionPage {
+            entries: rows.into_iter().map(|(row, _)| row).collect(),
+            next_cursor,
+        })
     }
 
     pub fn mark_finished(
@@ -410,6 +477,156 @@ mod tests {
     use super::{Database, NewConversion};
     use rusqlite::Connection;
     use uuid::Uuid;
+
+    fn seed_history(database: &Database, count: u128) {
+        let mut connection = database.lock().unwrap();
+        let transaction = connection.transaction().unwrap();
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO conversions (id, source_name, output_format, status, created_at)
+                 VALUES (?1, 'scan.png', 'pdf', 'finished', '2026-01-01T00:00:00Z')",
+                )
+                .unwrap();
+            for id in 1..=count {
+                insert.execute([Uuid::from_u128(id).to_string()]).unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn history_pages_handle_timestamp_ties_insertions_and_deleted_cursor_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("history.sqlite3")).unwrap();
+        seed_history(&database, 150);
+        let first = database.list_conversions(None, 50).unwrap();
+        assert_eq!(first.entries.len(), 50);
+        assert_eq!(first.entries[0].conversion.id, Uuid::from_u128(150));
+        let cursor = first.next_cursor.as_ref().unwrap();
+        assert_eq!(cursor.created_at, "2026-01-01T00:00:00Z");
+        assert_eq!(cursor.id, Uuid::from_u128(101));
+        {
+            let connection = database.lock().unwrap();
+            connection
+                .execute(
+                    "DELETE FROM conversions WHERE id = ?1",
+                    [cursor.id.to_string()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO conversions (id, source_name, output_format, status, created_at)
+                VALUES (?1, 'new.png', 'pdf', 'finished', '2026-01-01T00:00:00Z')",
+                    [Uuid::from_u128(151).to_string()],
+                )
+                .unwrap();
+        }
+        let second = database.list_conversions(Some(cursor), 50).unwrap();
+        assert_eq!(second.entries[0].conversion.id, Uuid::from_u128(100));
+        let third = database
+            .list_conversions(second.next_cursor.as_ref(), 50)
+            .unwrap();
+        assert_eq!(third.entries.len(), 50);
+        assert!(third.next_cursor.is_none());
+        let ids: Vec<_> = first
+            .entries
+            .iter()
+            .chain(&second.entries)
+            .chain(&third.entries)
+            .map(|row| row.conversion.id.as_u128())
+            .collect();
+        assert_eq!(ids, (1..=150).rev().collect::<Vec<_>>());
+        assert_eq!(
+            database.list_conversions(None, 1).unwrap().entries[0]
+                .conversion
+                .id,
+            Uuid::from_u128(151)
+        );
+    }
+
+    #[test]
+    fn history_page_limits_and_stored_copy_flags_are_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("history.sqlite3")).unwrap();
+        assert!(database
+            .list_conversions(None, 50)
+            .unwrap()
+            .next_cursor
+            .is_none());
+        seed_history(&database, 120);
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE conversions SET output_data = zeroblob(8388608) WHERE id = ?1",
+                [Uuid::from_u128(120).to_string()],
+            )
+            .unwrap();
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE conversions SET output_base64 = 'JVBERg==' WHERE id = ?1",
+                [Uuid::from_u128(119).to_string()],
+            )
+            .unwrap();
+        let page = database.list_conversions(None, usize::MAX).unwrap();
+        assert_eq!(page.entries.len(), super::MAX_HISTORY_PAGE_SIZE);
+        assert!(page.entries[0].has_stored_file);
+        assert!(page.entries[1].has_stored_file);
+        assert!(!page.entries[2].has_stored_file);
+        assert_eq!(database.list_conversions(None, 0).unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn history_keyset_query_uses_the_ordering_index_without_a_temporary_sort() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("history.sqlite3")).unwrap();
+        let connection = database.lock().unwrap();
+        let mut statement = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT {} FROM conversions WHERE (created_at, id) < (?1, ?2)
+             ORDER BY created_at DESC, id DESC LIMIT 51",
+                super::CONVERSION_COLUMNS
+            ))
+            .unwrap();
+        let details = statement
+            .query_map(
+                [
+                    "2026-01-01T00:00:00Z",
+                    "00000000-0000-0000-0000-000000000050",
+                ],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join(" ");
+        assert!(details.contains("conversions_history_order"), "{details}");
+        assert!(!details.contains("TEMP B-TREE"), "{details}");
+    }
+
+    #[test]
+    #[ignore = "manual 10k-row history timing; no timing threshold"]
+    fn measure_large_history_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("history.sqlite3")).unwrap();
+        seed_history(&database, 10_000);
+        let start = std::time::Instant::now();
+        let first = database.list_conversions(None, 50).unwrap();
+        let first_time = start.elapsed();
+        let cursor = super::HistoryCursor {
+            created_at: "2026-01-01T00:00:00Z".into(),
+            id: Uuid::from_u128(100),
+        };
+        let start = std::time::Instant::now();
+        let deep = database.list_conversions(Some(&cursor), 50).unwrap();
+        let deep_time = start.elapsed();
+        assert_eq!(first.entries.len(), 50);
+        assert_eq!(deep.entries.len(), 50);
+        println!("10k-row history: first 50={first_time:?}, deep 50={deep_time:?}; rows read <=51/page, no OFFSET scan");
+    }
 
     #[test]
     fn migrates_existing_database_to_new_application_home() {
