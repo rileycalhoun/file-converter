@@ -1,6 +1,6 @@
 [package]
 name = "file-converter-desktop"
-version = "1.0.2"
+version = "1.0.4"
 description = "A local, offline-first desktop file converter"
 license = "Apache-2.0"
 edition = "2021"
