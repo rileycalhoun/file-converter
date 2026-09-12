@@ -31,6 +31,20 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify release tag and branch
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          test "$VERSION" = "$PACKAGE_VERSION" || { echo "::error::Release tag $GITHUB_REF_NAME does not match package.json version $PACKAGE_VERSION. Bump application versions before tagging."; exit 1; }
+          test "$VERSION" = "$TAURI_VERSION"
+          grep -q "^version = \"$VERSION\"$" src-tauri/Cargo.toml
+          git branch -r --contains "$GITHUB_SHA" | grep -Eq 'origin/(main|master)$'
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,20 +78,6 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Verify release tag and branch
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-
-          test "$GITHUB_REF_NAME" = "v$VERSION"
-          test "$VERSION" = "$PACKAGE_VERSION"
-          test "$VERSION" = "$TAURI_VERSION"
-          grep -q "^version = \"$VERSION\"$" src-tauri/Cargo.toml
-          git branch -r --contains "$GITHUB_SHA" | grep -Eq 'origin/(main|master)$'
 
   release:
     name: Publish macOS release

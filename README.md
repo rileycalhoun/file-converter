@@ -63,8 +63,8 @@ selected WASM package's declared browser API.
 Image conversion always uses the preserve-detail policy: it embeds the full
 pixel width and height. Compatible baseline 8-bit JFIF JPEGs with no required
 orientation or special color handling retain their original compressed stream;
-other images use lossless Flate compression after decoding. There is no automatic
-downsampling, additional lossy JPEG compression, automatic grayscale
+other images use lossless Flate compression after decoding. There is no decoded-size
+budget, downsampling, additional lossy JPEG compression, automatic grayscale
 conversion, or dithering. A 4000 × 3000 scan therefore stays 4000 × 3000 in the PDF
 (with dimensions exchanged when its EXIF orientation requires a quarter turn).
 

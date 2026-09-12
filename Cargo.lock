@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "file-converter-desktop"
-version = "1.0.2"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "async-trait",
