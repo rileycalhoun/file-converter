@@ -1,0 +1,323 @@
+{
+  "date": "2026-09-04",
+  "platform": "darwin",
+  "arch": "arm64",
+  "node": "v26.7.0",
+  "nativeVersion": "LibreOfficeDev 26.8.0.0.alpha0 2c87e51eeaa2b413ff4ae097b2705eea1995d8e5",
+  "wasmPackage": "@matbee/libreoffice-converter@2.7.2",
+  "nativeBundleDiskKiB": 419588,
+  "signingObserved": "ad-hoc; no TeamIdentifier; no sealed resources",
+  "results": [
+    {
+      "fixture": "sample.docx",
+      "fixtureSha256": "874eb72363f73ff00ab020ff8c96a7332773afab3d59776f04fbea177fe6d4fb",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 745.9340420000001,
+          "maxRssBytes": 158711808,
+          "outputBytes": 15622
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 462.0340830000001,
+          "maxRssBytes": 158203904,
+          "outputBytes": 15622
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1467.190625,
+        "maxRssBytes": 1543159808,
+        "initializationMs": 572.271708,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 415.44270900000004,
+            "outputBytes": 10798
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 55.63829200000009,
+            "outputBytes": 10798
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          612,
+          792
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Both rendered examples legible with same visible content and overall placement."
+      }
+    },
+    {
+      "fixture": "sample.pptx",
+      "fixtureSha256": "513016824e9e2e45f8d253da472d8d8dc912f53a3b16cb4cb2c3a69b6c3cdc2a",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 649.1300839999999,
+          "maxRssBytes": 134332416,
+          "outputBytes": 18130
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 504.88870799999995,
+          "maxRssBytes": 134053888,
+          "outputBytes": 18130
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1395.0272919999998,
+        "maxRssBytes": 1828798464,
+        "initializationMs": 444.022292,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 557.0856249999999,
+            "outputBytes": 9053
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 128.07337499999994,
+            "outputBytes": 9053
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          720,
+          540
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Body text alignment differs between native and WASM."
+      }
+    },
+    {
+      "fixture": "sample.xlsx",
+      "fixtureSha256": "3842c59080692bdf0249a5bef0259f6c7aa3743006643a9659c38dcc7e9ff033",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 601.5088750000004,
+          "maxRssBytes": 114196480,
+          "outputBytes": 14168
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 429.22341700000015,
+          "maxRssBytes": 114049024,
+          "outputBytes": 14168
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1152.3382500000007,
+        "maxRssBytes": 1581678592,
+        "initializationMs": 459.08525,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 339.4605,
+            "outputBytes": 8090
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 27.39945799999998,
+            "outputBytes": 8090
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          612,
+          792
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Both rendered examples legible with same visible content and overall placement."
+      }
+    },
+    {
+      "fixture": "sample.odt",
+      "fixtureSha256": "37cbaeae4f0c2f37fecf57aab3f54bfe44de4fed39bfa7ea81ef30a3fbfc42ec",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 547.9299170000004,
+          "maxRssBytes": 154124288,
+          "outputBytes": 15622
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 435.8392499999991,
+          "maxRssBytes": 153714688,
+          "outputBytes": 15622
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1208.2867920000008,
+        "maxRssBytes": 1732640768,
+        "initializationMs": 440.018167,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 388.22291700000005,
+            "outputBytes": 10798
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 28.140709000000015,
+            "outputBytes": 10798
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          612,
+          792
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Text/dimensions inspected; no separate visual comparison."
+      }
+    },
+    {
+      "fixture": "sample.rtf",
+      "fixtureSha256": "294583cd05b609b73879b7efa5fedfb4ba0731cff71f17b32573370c54ec944e",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 527.2874580000007,
+          "maxRssBytes": 148668416,
+          "outputBytes": 13908
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 402.45095800000126,
+          "maxRssBytes": 148275200,
+          "outputBytes": 13908
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1138.5426669999997,
+        "maxRssBytes": 1691959296,
+        "initializationMs": 448.336167,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 292.98462500000005,
+            "outputBytes": 9393
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 13.760625000000005,
+            "outputBytes": 9393
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          612,
+          792
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Text/dimensions inspected; no separate visual comparison."
+      }
+    },
+    {
+      "fixture": "sample.txt",
+      "fixtureSha256": "1695e5fc6cc2adb08f3ee5103d41b0cd34738aa77224a5eca437724adcc9a080",
+      "native": [
+        {
+          "runtime": "fresh-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 503.7837920000002,
+          "maxRssBytes": 145637376,
+          "outputBytes": 13887
+        },
+        {
+          "runtime": "restarted-same-profile",
+          "code": 0,
+          "timedOut": false,
+          "wallMs": 405.1396249999998,
+          "maxRssBytes": 145227776,
+          "outputBytes": 13887
+        }
+      ],
+      "wasm": {
+        "code": 0,
+        "timedOut": false,
+        "wholeProcessWallMs": 1054.5814580000006,
+        "maxRssBytes": 1520484352,
+        "initializationMs": 439.933416,
+        "samples": [
+          {
+            "runtime": "first-conversion",
+            "conversionMs": 247.75483400000002,
+            "outputBytes": 9388
+          },
+          {
+            "runtime": "same-worker",
+            "conversionMs": 11.580333999999993,
+            "outputBytes": 9388
+          }
+        ]
+      },
+      "fidelity": {
+        "pages": 1,
+        "dimensionsPoints": [
+          612,
+          792
+        ],
+        "firstPairExtractedTextMatches": true,
+        "visualNote": "Text/dimensions inspected; no separate visual comparison."
+      }
+    }
+  ],
+  "realNativeCancellation": {
+    "deadlineMs": 50,
+    "elapsedMs": 53.775833,
+    "signal": "SIGKILL"
+  },
+  "caveats": [
+    "Native repeat starts a new process with the same profile; it is not a resident daemon.",
+    "WASM samples use the Node worker with the same pinned WASM binary, not a packaged WebView.",
+    "maxRssBytes is /usr/bin/time process high-water RSS; not summed concurrent tree RSS, physical footprint, or idle memory.",
+    "Fresh profile/worker does not imply cold OS or HTTP caches. PDF header checks are not fidelity proof."
+  ]
+}

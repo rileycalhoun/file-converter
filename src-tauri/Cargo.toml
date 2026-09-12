@@ -1,6 +1,6 @@
 [package]
 name = "file-converter-desktop"
-version = "1.0.2"
+version = "1.0.5"
 description = "A local, offline-first desktop file converter"
 license = "Apache-2.0"
 edition = "2021"
@@ -17,19 +17,20 @@ anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 printpdf = { version = "0.12.7", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 portpicker = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+same-file = "1"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-localhost = "2"
 tauri-plugin-opener = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zstd = "0.13"
 
 [dev-dependencies]
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
-tempfile = "3"

@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { WorkerBrowserConverter, createWasmPaths } from "@matbee/libreoffice-converter/browser";
+import { createWasmPaths } from "@matbee/libreoffice-converter/browser";
 import { ConversionGuard } from "./conversion-guard.js";
+import { HistoryPager } from "./history-pager.js";
+import { LibreOfficeWasmRunner, failWasmConversion } from "./libreoffice-wasm-runner.js";
 
 const state = {
   selectedPath: null,
@@ -9,54 +11,20 @@ const state = {
   supportedFormats: [],
   conversions: [],
   activeConversionId: null,
+  activeConversionToken: null,
   cancellationRequested: false,
 };
 
 const elements = Object.fromEntries([
   "history-button", "settings-button", "choose-file", "selected-file", "convert", "convert-button",
   "status", "status-message", "history-dialog", "history-summary", "history-list", "settings-dialog",
-  "supported-list",
+  "supported-list", "history-more",
 ].map((id) => [camelize(id), document.querySelector(`#${id}`)]));
 
-class LibreOfficeWasmRunner {
-  converter = null;
-  initialization = null;
-
-  async initialize(onProgress) {
-    if (this.converter?.isReady()) return;
-    if (this.initialization) return this.initialization;
-    if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
-      throw new Error("The local LibreOffice runtime requires cross-origin isolation, but this app window is not isolated.");
-    }
-    this.converter = new WorkerBrowserConverter({
-      ...createWasmPaths("/libreoffice-wasm/"),
-      browserWorkerJs: "/libreoffice-wasm/browser.worker.global.js",
-      verbose: false,
-      onProgress,
-    });
-    this.initialization = this.converter.initialize().finally(() => {
-      this.initialization = null;
-    });
-    return this.initialization;
-  }
-
-  async convert(task, onProgress) {
-    await this.initialize(onProgress);
-    const input = new Uint8Array(await invoke("read_conversion_input", {
-      id: task.conversionId,
-    }));
-    const result = await this.converter.convert(input, {
-      inputFormat: task.inputFormat,
-      outputFormat: "pdf",
-    }, task.fileName);
-    return invoke("complete_wasm_conversion", result.data, {
-      headers: { "x-conversion-id": task.conversionId },
-    });
-  }
-}
-
-const wasmRunner = new LibreOfficeWasmRunner();
+// Each read returns private IPC bytes used only by this worker request.
+const wasmRunner = new LibreOfficeWasmRunner({ invoke, wasmPaths: createWasmPaths("/libreoffice-wasm/"), transferInputOwnership: true });
 const conversionGuard = new ConversionGuard();
+const historyPager = new HistoryPager((parameters) => invoke("list_conversions", parameters));
 
 elements.chooseFile.addEventListener("click", chooseFile);
 elements.convert.addEventListener("submit", async (event) => {
@@ -70,10 +38,11 @@ elements.convert.addEventListener("submit", async (event) => {
 });
 elements.settingsButton.addEventListener("click", () => elements.settingsDialog.showModal());
 elements.historyButton.addEventListener("click", async () => {
-  await loadHistory();
   elements.historyDialog.showModal();
+  await loadHistory();
 });
 elements.historyList.addEventListener("click", handleHistoryAction);
+elements.historyMore.addEventListener("click", () => loadHistory({ append: true }));
 
 document.querySelectorAll("[data-close]").forEach((button) => {
   button.addEventListener("click", () => document.querySelector(`#${button.dataset.close}`).close());
@@ -115,6 +84,7 @@ async function beginConversion(createStart) {
     showStatus("Another conversion is already running. Wait for it to finish or cancel it.", "error");
     return;
   }
+  state.activeConversionToken = token;
   setBusy(true);
   state.cancellationRequested = false;
   showStatus("Preparing local conversion…", "working");
@@ -135,11 +105,8 @@ async function beginConversion(createStart) {
         }
       });
     } catch (error) {
-      if (state.cancellationRequested) return;
-      conversion = await invoke("fail_wasm_conversion", {
-        id: start.wasmTask.conversionId,
-        error: safeEngineError(error),
-      });
+      if (error?.name === "AbortError" || state.cancellationRequested) return;
+      conversion = await failWasmConversion(invoke, start.wasmTask.conversionId, error);
     }
     finishUiConversion(conversion);
   } catch (error) {
@@ -150,7 +117,7 @@ async function beginConversion(createStart) {
       state.cancellationRequested = false;
       setBusy(false);
     }
-    await loadHistory();
+    if (elements.historyDialog.open) await loadHistory();
   }
 }
 
@@ -158,11 +125,17 @@ async function requestCancellation() {
   if (!state.activeConversionId || state.cancellationRequested) return;
   state.cancellationRequested = true;
   elements.convertButton.disabled = true;
-  showStatus("Cancellation requested. The current WASM operation will be discarded safely when it stops.", "working");
+  const id = state.activeConversionId;
+  const token = state.activeConversionToken;
+  // Stop synchronously: cancelling must not wait for a blocked WASM thread.
+  wasmRunner.cancel();
+  showStatus("Conversion cancelled. No output file was saved.", "working");
   try {
-    await invoke("cancel_conversion", { id: state.activeConversionId });
+    await invoke("cancel_conversion", { id });
   } catch (error) {
-    showStatus(String(error), "error");
+    if (state.activeConversionToken === token) showStatus(String(error), "error");
+  } finally {
+    if (elements.historyDialog.open) await loadHistory();
   }
 }
 
@@ -204,35 +177,63 @@ async function loadSupportedFormats() {
   `).join("");
 }
 
-async function loadHistory() {
-  elements.historyList.setAttribute("aria-busy", "true");
+async function loadHistory({ append = false } = {}) {
+  const pending = historyPager.load({ reset: !append });
+  setHistoryLoading();
   try {
-    state.conversions = await invoke("list_conversions");
-    renderHistory();
+    const page = await pending;
+    if (!page) return;
+    state.conversions = historyPager.items;
+    if (append && state.conversions.length > page.entries.length) {
+      elements.historyList.insertAdjacentHTML("beforeend", page.entries.map(historyEntryHtml).join(""));
+      renderHistorySummary();
+    } else {
+      renderHistory();
+    }
   } catch (error) {
-    elements.historySummary.textContent = "History is temporarily unavailable.";
-    elements.historyList.innerHTML = `<p class="history-empty">${escapeHtml(String(error))}</p>`;
+    elements.historySummary.textContent = `History is temporarily unavailable: ${String(error)}`;
+    // Keep already loaded rows and their actions available when a later page fails.
   } finally {
-    elements.historyList.removeAttribute("aria-busy");
+    setHistoryLoading();
   }
 }
 
-function renderHistory() {
+function setHistoryLoading() {
+  elements.historyList.setAttribute("aria-busy", String(historyPager.loading));
+  elements.historyMore.disabled = historyPager.loading;
+  elements.historyMore.textContent = historyPager.loading ? "Loading…" : "Load more";
+  if (historyPager.loading && !historyPager.loaded) elements.historySummary.textContent = "Loading recent conversions…";
+}
+
+function renderHistorySummary() {
   const count = state.conversions.length;
   elements.historySummary.textContent = count === 0
-    ? "Completed conversions will appear here."
-    : `${count} saved ${count === 1 ? "conversion" : "conversions"}, newest first.`;
-  elements.historyButton.title = count === 0 ? "No saved conversions" : `${count} saved conversions`;
+    ? historyPager.nextCursor ? "More history is available." : "Completed conversions will appear here."
+    : `Showing ${count} saved ${count === 1 ? "conversion" : "conversions"}, newest first${historyPager.nextCursor ? "; more available" : ""}.`;
+  elements.historyButton.title = count === 0 ? "Conversion history" : `${count}${historyPager.nextCursor ? "+" : ""} saved conversions`;
+  elements.historyMore.hidden = !historyPager.nextCursor;
+}
+
+function renderHistory() {
+  renderHistorySummary();
+  const count = state.conversions.length;
   if (count === 0) {
     elements.historyList.innerHTML = `
       <div class="history-empty">
-        <strong>No conversions yet</strong>
-        <span>Choose a file to create your first local PDF.</span>
+        <strong>${historyPager.nextCursor ? "No entries currently shown" : "No conversions yet"}</strong>
+        <span>${historyPager.nextCursor ? "Load more to see older conversions." : "Choose a file to create your first local PDF."}</span>
       </div>
     `;
     return;
   }
   elements.historyList.innerHTML = state.conversions.map(historyEntryHtml).join("");
+}
+
+function replaceHistoryEntry(conversion) {
+  historyPager.update(conversion);
+  state.conversions = historyPager.items;
+  const article = elements.historyList.querySelector(`[data-entry-id="${conversion.id}"]`);
+  if (article) article.outerHTML = historyEntryHtml(conversion);
 }
 
 function historyEntryHtml(conversion) {
@@ -260,7 +261,7 @@ function historyEntryHtml(conversion) {
     actions.push(historyButtonHtml("delete", conversion.id, "Delete", "danger"));
   }
   return `
-    <article class="history-entry" data-status="${escapeHtml(conversion.status)}">
+    <article class="history-entry" data-entry-id="${conversion.id}" data-status="${escapeHtml(conversion.status)}">
       <header>
         <div>
           <h4 title="${escapeHtml(conversion.sourceName)}">${escapeHtml(conversion.sourceName)}</h4>
@@ -298,20 +299,24 @@ async function handleHistoryAction(event) {
       const availability = await invoke("open_conversion", { id: conversion.id });
       Object.assign(conversion, availability);
       if (availability.missing) {
-        renderHistory();
+        replaceHistoryEntry(conversion);
         showStatus("The converted PDF is missing. Choose an available recovery option in History.", "error");
       }
     } else if (action === "restore") {
       await invoke("restore_conversion", { id: conversion.id });
       showStatus(`${conversion.sourceName} was restored from its legacy saved copy.`, "success");
-      await loadHistory();
+      replaceHistoryEntry(await invoke("get_history_entry", { id: conversion.id }));
     } else if (action === "reconvert") {
       elements.historyDialog.close();
       await beginConversion(() => invoke("reconvert", { id: conversion.id }));
     } else if (action === "delete") {
       await invoke("delete_conversion", { id: conversion.id });
       showStatus(`Removed ${conversion.sourceName} from conversion history.`, "success");
-      await loadHistory();
+      historyPager.remove(conversion.id);
+      state.conversions = historyPager.items;
+      elements.historyList.querySelector(`[data-entry-id="${conversion.id}"]`)?.remove();
+      if (state.conversions.length) renderHistorySummary();
+      else renderHistory();
     }
   } catch (error) {
     showStatus(String(error), "error");
@@ -359,11 +364,6 @@ function hideStatus() {
   elements.status.style.display = "none";
 }
 
-function safeEngineError(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\n.*/s, "").slice(0, 600);
-}
-
 function fileName(path) {
   return path.split(/[\\/]/).pop();
 }
@@ -402,4 +402,4 @@ function escapeHtml(value) {
   })[character]);
 }
 
-await Promise.all([loadSupportedFormats(), loadHistory()]);
+await loadSupportedFormats();

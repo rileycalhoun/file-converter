@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 use crate::{
     conversion::{
-        detect_format, supported_formats, unique_output_path, ConversionStart, SupportedFormat,
+        detect_format, publish_output, supported_formats, unique_output_path, ConversionStart,
+        SupportedFormat,
     },
-    database::{Conversion, Database},
+    database::{Conversion, Database, HistoryCursor, DEFAULT_HISTORY_PAGE_SIZE},
     AppState,
 };
 
@@ -39,6 +40,13 @@ pub(crate) struct HistoryEntry {
     availability: OpenConversionResult,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HistoryPage {
+    entries: Vec<HistoryEntry>,
+    next_cursor: Option<HistoryCursor>,
+}
+
 #[tauri::command]
 pub(crate) fn get_supported_formats() -> Vec<SupportedFormat> {
     supported_formats().to_vec()
@@ -63,14 +71,84 @@ pub(crate) fn inspect_source(input_path: String) -> Result<DetectedSource, Strin
 }
 
 #[tauri::command]
-pub(crate) fn list_conversions(state: State<'_, AppState>) -> Result<Vec<HistoryEntry>, String> {
-    let database = state.service.database();
-    database
-        .list_conversions()
+pub(crate) async fn list_conversions(
+    state: State<'_, AppState>,
+    after: Option<HistoryCursor>,
+    page_size: Option<usize>,
+) -> Result<HistoryPage, String> {
+    let database = state.service.database_handle();
+    state
+        .service
+        .blocking_io()
+        .run(move || {
+            history_page(
+                &database,
+                after.as_ref(),
+                page_size.unwrap_or(DEFAULT_HISTORY_PAGE_SIZE),
+                |path| path.is_file(),
+            )
+        })
+        .await
         .map_err(error_message)?
+}
+
+fn history_page(
+    database: &Database,
+    after: Option<&HistoryCursor>,
+    page_size: usize,
+    mut is_file: impl FnMut(&Path) -> bool,
+) -> Result<HistoryPage, String> {
+    let page = database
+        .list_conversions(after, page_size)
+        .map_err(error_message)?;
+    // The database mutex is released before filesystem probes. Only visible rows
+    // are checked, never the lookahead row or the rest of the history.
+    let entries = page
+        .entries
         .into_iter()
-        .map(|conversion| history_entry(database, conversion))
-        .collect()
+        .map(|row| {
+            let conversion = row.conversion;
+            let missing = conversion
+                .output_path
+                .as_deref()
+                .map(Path::new)
+                .is_none_or(|path| !is_file(path));
+            let availability = OpenConversionResult {
+                missing,
+                restorable: missing && row.has_stored_file,
+                reconvertible: missing
+                    && conversion
+                        .source_path
+                        .as_deref()
+                        .is_some_and(|source| is_file(Path::new(source))),
+            };
+            HistoryEntry {
+                conversion,
+                availability,
+            }
+        })
+        .collect();
+    Ok(HistoryPage {
+        entries,
+        next_cursor: page.next_cursor,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn get_history_entry(
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<HistoryEntry, String> {
+    let database = state.service.database_handle();
+    state
+        .service
+        .blocking_io()
+        .run(move || {
+            let conversion = database.get_conversion(id).map_err(error_message)?;
+            history_entry(&database, conversion)
+        })
+        .await
+        .map_err(error_message)?
 }
 
 #[tauri::command]
@@ -107,7 +185,7 @@ pub(crate) async fn read_conversion_input(
 }
 
 #[tauri::command]
-pub(crate) fn complete_wasm_conversion(
+pub(crate) async fn complete_wasm_conversion(
     request: tauri::ipc::Request<'_>,
     state: State<'_, AppState>,
 ) -> Result<Conversion, String> {
@@ -115,7 +193,11 @@ pub(crate) fn complete_wasm_conversion(
     let InvokeBody::Raw(pdf) = request.body() else {
         return Err("The converted PDF must be sent as a binary payload.".into());
     };
-    state.service.complete_wasm(id, pdf).map_err(error_message)
+    state
+        .service
+        .complete_wasm(id, pdf)
+        .await
+        .map_err(error_message)
 }
 
 #[tauri::command]
@@ -161,21 +243,31 @@ pub(crate) fn open_conversion(
 }
 
 #[tauri::command]
-pub(crate) fn restore_conversion(
+pub(crate) async fn restore_conversion(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: Uuid,
 ) -> Result<(), String> {
-    let conversion = state
+    let database = state.service.database_handle();
+    let application_home = state.application_home.clone();
+    let output_path = state
         .service
-        .database()
-        .get_conversion(id)
-        .map_err(error_message)?;
-    let stored = state
-        .service
-        .database()
-        .stored_file(id)
-        .map_err(error_message)?;
+        .blocking_io()
+        .run(move || restore_stored_conversion(&database, &application_home, id))
+        .await
+        .map_err(error_message)??;
+    app.opener()
+        .open_path(output_path.to_string_lossy(), None::<&str>)
+        .map_err(error_message)
+}
+
+fn restore_stored_conversion(
+    database: &Database,
+    application_home: &Path,
+    id: Uuid,
+) -> Result<PathBuf, String> {
+    let conversion = database.get_conversion(id).map_err(error_message)?;
+    let stored = database.stored_file(id).map_err(error_message)?;
     let output_name = crate::conversion::pdf_file_name(&stored.source_name);
     let output_directory = conversion
         .source_path
@@ -183,20 +275,16 @@ pub(crate) fn restore_conversion(
         .and_then(|source| Path::new(source).parent())
         .filter(|directory| directory.is_dir())
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| state.application_home.join("legacy-restored-files"));
+        .unwrap_or_else(|| application_home.join("legacy-restored-files"));
     let output_path = unique_output_path(&output_directory, id, &output_name);
     std::fs::create_dir_all(&output_directory)
         .map_err(|error| format!("Could not prepare the output folder: {error}"))?;
-    std::fs::write(&output_path, stored.bytes)
+    let published = publish_output(&output_path, stored.bytes.as_slice())
         .map_err(|error| format!("Could not recreate the converted file: {error}"))?;
-    state
-        .service
-        .database()
-        .update_output_path(id, &output_path)
+    database
+        .update_output_path(id, published.path())
         .map_err(error_message)?;
-    app.opener()
-        .open_path(output_path.to_string_lossy(), None::<&str>)
-        .map_err(error_message)
+    Ok(published.commit())
 }
 
 #[tauri::command]
@@ -264,6 +352,140 @@ fn error_message(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::database::NewConversion;
+
+    #[test]
+    fn history_availability_probes_only_returned_rows_not_the_lookahead_or_full_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite3");
+        let database = Database::open(&path).unwrap();
+        let mut connection = rusqlite::Connection::open(&path).unwrap();
+        let transaction = connection.transaction().unwrap();
+        for id in 1..=120 {
+            transaction.execute(
+                "INSERT INTO conversions (id, source_name, source_path, output_path, output_format, status, created_at)
+                 VALUES (?1, 'scan.png', '/missing/source.png', '/missing/output.pdf', 'pdf', 'finished', '2026-01-01T00:00:00Z')",
+                [Uuid::from_u128(id).to_string()],
+            ).unwrap();
+        }
+        transaction.commit().unwrap();
+        let mut probes = 0;
+        let page = history_page(&database, None, 50, |_| {
+            probes += 1;
+            false
+        })
+        .unwrap();
+        assert_eq!(page.entries.len(), 50);
+        assert!(page.next_cursor.is_some());
+        assert_eq!(probes, 100, "at most output + source per visible row");
+        let mut probes = 0;
+        let page = history_page(&database, page.next_cursor.as_ref(), 50, |_| {
+            probes += 1;
+            true
+        })
+        .unwrap();
+        assert_eq!(page.entries.len(), 50);
+        assert_eq!(probes, 50, "existing outputs do not require source probes");
+        assert!(page.entries.iter().all(|entry| !entry.availability.missing));
+    }
+
+    fn stored_conversion(directory: &Path) -> (Database, Uuid, PathBuf) {
+        let db_path = directory.join("history.sqlite3");
+        let database = Database::open(&db_path).unwrap();
+        let id = Uuid::new_v4();
+        database
+            .insert_conversion(NewConversion {
+                id,
+                source_name: "source.docx",
+                source_path: &directory.join("source.docx"),
+                detected_format: "docx",
+                output_format: "pdf",
+                engine: "legacy",
+                source_size: 6,
+            })
+            .unwrap();
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute(
+                "UPDATE conversions SET status = 'finished', output_data = ?2 WHERE id = ?1",
+                rusqlite::params![id.to_string(), b"%PDF-restored".as_slice()],
+            )
+            .unwrap();
+        (database, id, db_path)
+    }
+
+    #[test]
+    fn repeated_restoration_preserves_existing_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, _) = stored_conversion(directory.path());
+        let preferred = unique_output_path(directory.path(), id, "source.pdf");
+        std::fs::write(&preferred, b"unrelated").unwrap();
+        let first = restore_stored_conversion(&database, directory.path(), id).unwrap();
+        let second = restore_stored_conversion(&database, directory.path(), id).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&preferred).unwrap(), b"unrelated");
+        assert_eq!(std::fs::read(&first).unwrap(), b"%PDF-restored");
+        assert_eq!(std::fs::read(&second).unwrap(), b"%PDF-restored");
+        assert_eq!(
+            database.get_conversion(id).unwrap().output_path.unwrap(),
+            second.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn concurrent_restoration_never_clobbers_another_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, _) = stored_conversion(directory.path());
+        let database = std::sync::Arc::new(database);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let database = database.clone();
+                let barrier = barrier.clone();
+                let home = directory.path().to_path_buf();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    restore_stored_conversion(&database, &home, id).unwrap()
+                })
+            })
+            .collect();
+        let paths: std::collections::HashSet<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(paths.len(), 4);
+        for path in paths {
+            assert_eq!(std::fs::read(path).unwrap(), b"%PDF-restored");
+        }
+    }
+
+    #[test]
+    fn restore_persistence_failure_removes_only_the_new_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let (database, id, db_path) = stored_conversion(directory.path());
+        let preferred = unique_output_path(directory.path(), id, "source.pdf");
+        std::fs::write(&preferred, b"unrelated").unwrap();
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_restore BEFORE UPDATE OF output_path ON conversions
+             BEGIN SELECT RAISE(FAIL, 'injected persistence failure'); END;",
+            )
+            .unwrap();
+        assert!(restore_stored_conversion(&database, directory.path(), id).is_err());
+        assert_eq!(std::fs::read(preferred).unwrap(), b"unrelated");
+        assert!(database.get_conversion(id).unwrap().output_path.is_none());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "pdf"))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn history_availability_tracks_missing_outputs_and_sources() {

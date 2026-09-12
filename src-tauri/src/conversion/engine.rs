@@ -7,6 +7,9 @@ use super::{
 #[derive(Debug)]
 pub enum EngineOutput {
     Complete(ConversionResult),
+    /// The source is already a PDF. Publish an independent destination copy
+    /// directly, without writing another complete PDF into the cache first.
+    CopySource(ConversionResult),
     RequiresBrowser(WasmConversionTask),
 }
 

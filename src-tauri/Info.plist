@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>File Converter needs access to read the documents you select and save converted PDFs beside them in Downloads.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>File Converter needs access to read the documents you select and save converted PDFs beside them in Documents.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>File Converter needs access to read the documents you select and save converted PDFs beside them on your Desktop.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>File Converter needs access to read the documents you select and save converted PDFs beside them on removable drives.</string>
+    <key>NSNetworkVolumesUsageDescription</key>
+    <string>File Converter needs access to read the documents you select and save converted PDFs beside them on network drives.</string>
+</dict>
+</plist>
